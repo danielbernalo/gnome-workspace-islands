@@ -107,6 +107,8 @@ Shortcuts act on the **monitor that has focus**. On the primary monitor they're 
 
 A **three-finger touchpad swipe** over a secondary monitor does the same thing, following your fingers. Over the primary monitor it stays GNOME's.
 
+In the overview, a secondary monitor scrolls through its virtual workspaces like the primary scrolls through native ones — swipe, two-finger scroll or wheel — and a window can be **dragged onto a thumbnail** to move it to that workspace.
+
 ## What you see
 
 Nothing that GNOME doesn't already draw.
@@ -162,6 +164,7 @@ Windows have **no stable identity across sessions** — a `MetaWindow` is a live
 - [x] 9 Touchpad swipe on secondary monitors
 - [x] 10 Slide preview driven by the swipe
 - [x] 11 Virtual workspaces laid out in the overview
+- [x] 12 Drag a window onto another virtual workspace
 
 **11** was on the "deliberately not built" list until it was asked for, and the
 reason it was there still stands: it is the most update-fragile code here. All
@@ -193,6 +196,21 @@ of cloning a possibly unmapped actor, and the strip here uses the same thing.
 
 Clicking a window needed no code at all: it un-minimizes, and the follow logic
 already reads that as "take me there".
+
+**12** needed less than it looks like, and more than it should have. `Workspace`
+is already a drop target — and already refused ours, because `acceptDrop` bails
+on `this._isMyWindow(window)`, which with a null MetaWorkspace means "is it on
+this monitor" and is therefore true of every window on every page. Comparing
+virtual workspaces instead of monitors is the fix. The thumbnails are new
+targets of their own, and in the scrolling model they are the reachable ones:
+only one page is on screen at a time, so dragging *between* pages is not a
+gesture anyone can perform. Dropping onto the page you are looking at still
+matters for windows dragged in from the primary monitor.
+
+Moving a window between virtual workspaces fires no Meta signal — it is a
+minimize, and `Workspace` only listens for workspace and monitor changes — so
+the view rebuilds itself after a drop, deferred to an idle because the accept
+callback is no place to destroy the actor tree the drag just landed on.
 
 **9 and 10 are one item in two lines.** In GNOME the live preview *is* the
 gesture: `MonitorGroup` binds its `progress` to the same adjustment the panel

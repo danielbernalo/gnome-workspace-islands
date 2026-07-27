@@ -68,6 +68,7 @@ import Mtk from 'gi://Mtk';
 import Shell from 'gi://Shell';
 
 import { InjectionManager } from 'resource:///org/gnome/shell/extensions/extension.js';
+import * as DND from 'resource:///org/gnome/shell/ui/dnd.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as SwipeTracker from 'resource:///org/gnome/shell/ui/swipeTracker.js';
 import { Workspace } from 'resource:///org/gnome/shell/ui/workspace.js';
@@ -98,13 +99,15 @@ let ourTracker = null;
  *   for a monitor, or null for the primary and anything unmanaged
  * @param {(state: object, index: number) => void} opts.onActivate commit a
  *   switch chosen from inside the overview
+ * @param {(state: object, index: number, window: Meta.Window, monitorIndex: number) => void} opts.onDrop
  * @param {(message: string) => void} opts.log honours debug-logging
  */
-export function patch({ getState, onActivate, log }) {
+export function patch({ getState, onActivate, onDrop, log }) {
     injector = new InjectionManager();
 
     patchWindowFilter();
-    patchSecondaryView(getState, onActivate);
+    patchDropTarget();
+    patchSecondaryView(getState, onActivate, onDrop);
     takeOverGesture(getState, log);
     patchScroll(getState, log);
 }
@@ -149,7 +152,64 @@ function patchWindowFilter() {
         });
 }
 
-function patchSecondaryView(getState, onActivate) {
+/**
+ * Let a page accept a window dragged onto it.
+ *
+ * `Workspace` is already a drop target, and already refuses ours:
+ *
+ *     acceptDrop(source, ...) {
+ *         if (this._isMyWindow(window))
+ *             return false;
+ *
+ * With a null MetaWorkspace `_isMyWindow` means "is it on this monitor", which
+ * is true of every window on every one of our pages — so a drop between two of
+ * them is rejected, and `handleDragOver` never even offers the move cursor.
+ * Comparing virtual workspaces instead of monitors is the whole fix.
+ *
+ * In practice the strip is the reachable target, since only one page is on
+ * screen at a time. This matters for the other direction: dragging a window in
+ * from the primary monitor onto the page you are looking at.
+ */
+function patchDropTarget() {
+    const proto = Workspace?.prototype;
+
+    if (!proto || typeof proto.acceptDrop !== 'function') {
+        console.warn('dani-workspaces: Workspace drop handlers not found — ' +
+            'windows cannot be dragged between virtual workspaces');
+        return;
+    }
+
+    injector.overrideMethod(proto, 'handleDragOver',
+        originalMethod => function (source, actor, x, y, time) {
+            const virtual = tagFor(this);
+
+            if (virtual && source?.metaWindow) {
+                return virtual.state.indexOf(source.metaWindow) === virtual.index
+                    ? DND.DragMotionResult.CONTINUE
+                    : DND.DragMotionResult.MOVE_DROP;
+            }
+
+            return originalMethod.call(this, source, actor, x, y, time);
+        });
+
+    injector.overrideMethod(proto, 'acceptDrop',
+        originalMethod => function (source, actor, x, y, time) {
+            const virtual = tagFor(this);
+
+            if (!virtual || !source?.metaWindow)
+                return originalMethod.call(this, source, actor, x, y, time);
+
+            if (virtual.state.indexOf(source.metaWindow) === virtual.index)
+                return false;
+
+            // The callback rides on the tag, because that is the only thing a
+            // page carries that this module put there.
+            virtual.onDrop?.(virtual.index, source.metaWindow, this.monitorIndex);
+            return true;
+        });
+}
+
+function patchSecondaryView(getState, onActivate, onDrop) {
     const proto = SecondaryMonitorDisplay?.prototype;
 
     if (!proto || typeof proto._updateWorkspacesView !== 'function') {
@@ -175,7 +235,9 @@ function patchSecondaryView(getState, onActivate) {
                 this._monitorIndex,
                 this._overviewAdjustment,
                 state,
-                index => onActivate(state, index));
+                index => onActivate(state, index),
+                (index, window, monitorIndex) =>
+                    onDrop(state, index, window, monitorIndex));
 
             this.add_child(this._workspacesView);
         });

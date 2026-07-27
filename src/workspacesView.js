@@ -48,12 +48,14 @@
  */
 
 import Clutter from 'gi://Clutter';
+import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
 
 import * as Background from 'resource:///org/gnome/shell/ui/background.js';
+import * as DND from 'resource:///org/gnome/shell/ui/dnd.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { Workspace } from 'resource:///org/gnome/shell/ui/workspace.js';
 import { ExtraWorkspaceView } from 'resource:///org/gnome/shell/ui/workspacesView.js';
@@ -114,7 +116,7 @@ function createPage(monitorIndex, overviewAdjustment, tag) {
  */
 const Thumbnail = GObject.registerClass(
 class DaniWorkspaceThumbnail extends St.Widget {
-    _init(monitor, windows) {
+    _init(monitor, state, index, onDrop) {
         super._init({
             style_class: 'workspace-thumbnail',
             reactive: true,
@@ -122,6 +124,12 @@ class DaniWorkspaceThumbnail extends St.Widget {
         });
 
         this._monitor = monitor;
+        this._state = state;
+        this._index = index;
+        this._onDrop = onDrop;
+
+        // DND finds a target through `_delegate`, not through the actor.
+        this._delegate = this;
 
         this._contents = new Clutter.Actor({
             width: monitor.width,
@@ -137,10 +145,48 @@ class DaniWorkspaceThumbnail extends St.Widget {
             controlPosition: false,
         });
 
-        for (const window of windows)
-            this._addWindow(window);
+        this._previews = [];
+        this.setWindows(state.windowsOn(index));
 
         this.connect('destroy', () => this._onDestroy());
+    }
+
+    /** Rebuild the contents. A drop changes what belongs here. */
+    setWindows(windows) {
+        for (const preview of this._previews)
+            preview.destroy();
+
+        this._previews = [];
+
+        for (const window of windows)
+            this._addWindow(window);
+    }
+
+    /**
+     * The strip is the only drop target that is actually reachable.
+     *
+     * In the scrolling model one page fills the monitor and the others are off
+     * screen, so dragging a window onto a *page* other than the one you started
+     * from is not a gesture anyone can perform. The thumbnails are.
+     */
+    handleDragOver(source) {
+        if (!source?.metaWindow)
+            return DND.DragMotionResult.CONTINUE;
+
+        return this._state.indexOf(source.metaWindow) === this._index
+            ? DND.DragMotionResult.CONTINUE
+            : DND.DragMotionResult.MOVE_DROP;
+    }
+
+    acceptDrop(source) {
+        if (!source?.metaWindow)
+            return false;
+
+        if (this._state.indexOf(source.metaWindow) === this._index)
+            return false;
+
+        this._onDrop(this._index, source.metaWindow, this._monitor.index);
+        return true;
     }
 
     /**
@@ -167,6 +213,7 @@ class DaniWorkspaceThumbnail extends St.Widget {
         }
 
         this._contents.add_child(preview);
+        this._previews.push(preview);
     }
 
     vfunc_allocate(box) {
@@ -191,7 +238,7 @@ class DaniWorkspaceThumbnail extends St.Widget {
  */
 const Thumbnails = GObject.registerClass(
 class DaniWorkspaceThumbnails extends St.Widget {
-    _init(monitor, state, onActivate) {
+    _init(monitor, state, onActivate, onDrop) {
         super._init({ style_class: 'workspace-thumbnails' });
 
         this._monitor = monitor;
@@ -200,7 +247,7 @@ class DaniWorkspaceThumbnails extends St.Widget {
         this._thumbnails = [];
 
         for (let index = 0; index < state.size; index++) {
-            const thumbnail = new Thumbnail(monitor, state.windowsOn(index));
+            const thumbnail = new Thumbnail(monitor, state, index, onDrop);
 
             const click = new Clutter.ClickGesture();
             click.connect('recognize', () => onActivate(index));
@@ -218,6 +265,12 @@ class DaniWorkspaceThumbnails extends St.Widget {
         this.add_child(this._indicator);
 
         this.setActive(state.activeIndex);
+    }
+
+    /** Re-read the model. A drop moved a window between two of these. */
+    refresh() {
+        this._thumbnails.forEach(
+            (thumbnail, index) => thumbnail.setWindows(this._state.windowsOn(index)));
     }
 
     setActive(index) {
@@ -279,11 +332,12 @@ class DaniVirtualWorkspacesView extends ExtraWorkspaceView {
      * @param {St.Adjustment} overviewAdjustment
      * @param {object} state MonitorState
      * @param {(index: number) => void} onActivate commit a switch
+     * @param {(index: number, window: Meta.Window, monitorIndex: number) => void} onDrop
      */
-    _init(monitorIndex, overviewAdjustment, state, onActivate) {
+    _init(monitorIndex, overviewAdjustment, state, onActivate, onDrop) {
         // Page 0 is built inside super._init(), so its tag has to be in place
         // before that call — not after, when its window list already exists.
-        const first = { state, index: 0 };
+        const first = { state, index: 0, onDrop: (...args) => this._drop(...args) };
         building = first;
         try {
             super._init(monitorIndex, overviewAdjustment);
@@ -293,14 +347,20 @@ class DaniVirtualWorkspacesView extends ExtraWorkspaceView {
 
         this._state = state;
         this._onActivate = onActivate;
+        this._onDrop = onDrop;
+        this._monitorIndex = monitorIndex;
         this._monitor = Main.layoutManager.monitors[monitorIndex];
+        this._refreshId = 0;
 
         this._workspace[VIRTUAL] = first;
         this._pages = [this._workspace];
 
         for (let index = 1; index < state.size; index++) {
-            const page = createPage(monitorIndex, overviewAdjustment,
-                { state, index });
+            const page = createPage(monitorIndex, overviewAdjustment, {
+                state,
+                index,
+                onDrop: (...args) => this._drop(...args),
+            });
 
             this.add_child(page);
             this._pages.push(page);
@@ -324,10 +384,66 @@ class DaniVirtualWorkspacesView extends ExtraWorkspaceView {
         });
 
         this._thumbnails = new Thumbnails(this._monitor, state,
-            index => this.activate(index));
+            index => this.activate(index),
+            (...args) => this._drop(...args));
         this.add_child(this._thumbnails);
 
+        this.connect('destroy', () => {
+            if (this._refreshId) {
+                GLib.Source.remove(this._refreshId);
+                this._refreshId = 0;
+            }
+        });
+
         this._updateWorkspacesState();
+    }
+
+    /**
+     * Apply a drop, then rebuild.
+     *
+     * Moving a window between virtual workspaces fires no Meta signal — it is
+     * a minimize, and Workspace only listens for workspace and monitor changes
+     * — so nothing here would notice on its own. The rebuild is deferred to an
+     * idle because this runs from inside DND's accept callback, which is no
+     * place to destroy the actor tree the drag just landed on.
+     */
+    _drop(index, window, monitorIndex) {
+        this._onDrop(index, window, monitorIndex);
+
+        if (this._refreshId)
+            return;
+
+        this._refreshId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            this._refreshId = 0;
+            this._rebuildPages();
+            this._thumbnails.refresh();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _rebuildPages() {
+        for (const page of this._pages)
+            page.destroy();
+
+        this._pages = [];
+
+        for (let index = 0; index < this._state.size; index++) {
+            const page = createPage(this._monitorIndex, this._overviewAdjustment, {
+                state: this._state,
+                index,
+                onDrop: (...args) => this._drop(...args),
+            });
+
+            this.insert_child_below(page, this._thumbnails);
+            this._pages.push(page);
+        }
+
+        // The first page stands in for `this._workspace`, which the parent
+        // class still reaches for in _updateWorkspaceMode.
+        this._workspace = this._pages[0];
+
+        this._updateWorkspacesState();
+        this.queue_relayout();
     }
 
     /** @returns {St.Adjustment} what a swipe writes into */

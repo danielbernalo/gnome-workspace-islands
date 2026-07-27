@@ -87,6 +87,9 @@ export default class DaniWorkspaces extends Extension {
             onActivate: (state, index) =>
                 this._commitSwitch(state, index, { announce: false }),
 
+            onDrop: (state, index, window, monitorIndex) =>
+                this._dropWindow(state, index, window, monitorIndex),
+
             log: message => this._log(message),
         });
 
@@ -401,6 +404,29 @@ export default class DaniWorkspaces extends Extension {
 
         const count = state.size;
         this._switchTo((state.activeIndex + delta + count) % count, delta > 0);
+    }
+
+    /**
+     * Place a window dropped on a virtual workspace in the overview.
+     *
+     * Two cases. A window already on this monitor is just re-filed. A window
+     * dragged in from another monitor has to be moved there first, and Mutter
+     * announces that with `window-entered-monitor`, which adopts it onto
+     * whatever the app rule or the active workspace says — so the reassignment
+     * has to come after, not instead.
+     */
+    _dropWindow(state, index, window, monitorIndex) {
+        if (window.get_monitor() !== monitorIndex)
+            window.move_to_monitor(monitorIndex);
+
+        if (state.indexOf(window) === -1)
+            state.track(window, index);
+        else
+            state.moveWindowTo(window, index);
+
+        this._afterChange(
+            `dropped "${window.get_title()}" on virtual workspace ${index + 1} ` +
+            `of ${state.connector}`);
     }
 
     _moveFocused(delta) {
