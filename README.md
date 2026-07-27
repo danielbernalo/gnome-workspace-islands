@@ -45,7 +45,6 @@ Not on [extensions.gnome.org](https://extensions.gnome.org) yet — that route n
 
 ```bash
 gnome-extensions install --force workspace-islands@danielbernalo.github.io.shell-extension.zip
-gnome-extensions enable workspace-islands@danielbernalo.github.io
 ```
 
 <details>
@@ -56,16 +55,23 @@ git clone https://github.com/danielbernalo/gnome-workspace-islands
 cd gnome-workspace-islands
 make pack
 gnome-extensions install --force workspace-islands@danielbernalo.github.io.shell-extension.zip
-gnome-extensions enable workspace-islands@danielbernalo.github.io
 ```
 
 Needs `python3` and `glib-compile-schemas`, both of which you already have on a GNOME system. The build is deterministic — the same commit always produces the same archive, so you can check yours against the released one.
 
 </details>
 
-Then **log out and back in**. Wayland cannot reload the shell in place, so a new extension is not picked up until the session restarts.
+Now **log out and back in**. Wayland cannot reload the shell in place, and until the session restarts the shell does not know the extension exists.
 
-Verify it loaded:
+That last part is why enabling comes *after* the restart and not before — run it any earlier and you get `Extension … does not exist`, because you are asking a shell that has not looked yet:
+
+```bash
+gnome-extensions enable workspace-islands@danielbernalo.github.io
+```
+
+The Extensions app does the same thing with a switch, if you would rather.
+
+Verify it came up:
 
 ```bash
 gnome-extensions info workspace-islands@danielbernalo.github.io   # State: ACTIVE
@@ -164,6 +170,8 @@ Windows have **no stable identity across sessions** — a window is a live objec
 - **Where each application belongs.** New windows of an app land where you last put that app. A deliberate heuristic: two windows of the same app go to the same place, which is usually right and always correctable by moving the window.
 
 ## Troubleshooting
+
+**`gnome-extensions enable` says the extension does not exist.** You have not logged out yet. That command asks the running shell, and on Wayland the shell only scans for extensions when the session starts. Install, restart the session, then enable.
 
 **A shortcut does nothing.** You are probably focused on the primary monitor, where it is a no-op by design. Turn on debug logging and the journal will say so explicitly.
 
