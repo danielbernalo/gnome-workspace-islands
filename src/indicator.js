@@ -251,7 +251,16 @@ export class Indicator {
 
         // Follows the shell's own workspace state, fractional value included,
         // so time spent on the primary monitor looks untouched — because it is.
-        this._nativeAdjustment = Main.createWorkspacesAdjustment(this);
+        //
+        // The argument must be a real Clutter.Actor: createWorkspacesAdjustment
+        // passes it to `new St.Adjustment({actor})`, and a plain JS object gets
+        // "This JS object wrapper isn't wrapping a GObject" at enable() time.
+        // panel.js can pass `this` because there `this` *is* the actor; this
+        // class is not one. The stage is used rather than the dots because it
+        // outlives them — the panel is rebuilt on session mode changes, and the
+        // adjustment must not die with it. It is only a frame-clock owner; the
+        // registry that tracks it holds a WeakRef, so nothing is pinned.
+        this._nativeAdjustment = Main.createWorkspacesAdjustment(global.stage);
 
         this._connect(this._nativeAdjustment, 'notify::value', () => this.sync());
         this._connect(this._nativeAdjustment, 'notify::upper', () => this.sync());
@@ -321,12 +330,24 @@ export class Indicator {
             return;
         }
 
+        // Excluding our own: after a panel rebuild this runs again, and picking
+        // up a leftover Dots as "the native one" would hide the wrong widget.
         this._nativeDots = activities.get_children()
-            .find(child => child instanceof St.BoxLayout) ?? null;
+            .find(child => child !== this._dots && child instanceof St.BoxLayout)
+            ?? null;
         this._nativeDots?.hide();
 
         this._dots = new Dots();
-        activities.add_child(this._dots);
+
+        // Index 0, not add_child(). PanelMenu.ButtonBox.vfunc_allocate takes
+        // `get_first_child()` and allocates that one alone — an appended child
+        // is laid out by nobody, and its subtree logs "needs an allocation"
+        // forever while painting nothing.
+        //
+        // It also means the hidden native dots must stay in the tree at index
+        // 1 rather than being removed: destroying ours on unload makes them the
+        // first child again, and show() puts the panel back exactly as found.
+        activities.insert_child_at_index(this._dots, 0);
 
         this.sync();
     }
