@@ -109,7 +109,7 @@ import {
 import { connectorOf } from './monitorState.js';
 import { hide, reveal } from './visibility.js';
 
-/** Named so the replacement action can be lifted off the stage on unload. */
+/** Identifies the replacement action on the stage; SwipeTracker uses it too. */
 const TRACKER_NAME = 'workspace-islands swipe tracker';
 
 /**
@@ -406,7 +406,14 @@ export class SlideController {
 
         if (this._tracker) {
             this._tracker.enabled = false;
-            global.stage.remove_action_by_name(TRACKER_NAME);
+
+        // SwipeTracker.destroy() is the shell's own teardown: it destroys the
+        // touchpad gesture and lifts the pan action off the actor. It does not
+        // reach the scroll gesture — upstream connects that one with a plain
+        // `connect` and discards the handler id, so nobody can disconnect it.
+        // Disabling first is what makes that leftover inert: every gesture
+        // returns EVENT_PROPAGATE when the tracker is disabled.
+            this._tracker.destroy();
             this._tracker = null;
         }
 

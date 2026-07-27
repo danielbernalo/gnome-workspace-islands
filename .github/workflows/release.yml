@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GLib tools
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-bin
+
+      # A tag that disagrees with the metadata would ship an archive claiming a
+      # version nobody released. Cheaper to fail here than to yank a release.
+      - name: Tag matches version-name
+        run: |
+          python3 - <<'EOF'
+          import json, os, pathlib, sys
+
+          tag = os.environ['GITHUB_REF_NAME']
+          declared = json.loads(pathlib.Path('src/metadata.json').read_text())['version-name']
+
+          if tag != f'v{declared}':
+              sys.exit(f'tag {tag!r} does not match version-name {declared!r} (expected v{declared})')
+
+          print(f'ok: {tag}')
+          EOF
+
+      - name: Build the bundle
+        run: make pack
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          uuid=$(python3 -c "import json;print(json.load(open('src/metadata.json'))['uuid'])")
+
+          gh release create "$GITHUB_REF_NAME" \
+            "$uuid.shell-extension.zip" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes-start-tag "$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || echo '')" \
+            --notes "$(cat <<'NOTES'
+## Install
+
+Download the `.zip` below, then:
+
+```bash
+gnome-extensions install --force workspace-islands@danielbernalo.github.io.shell-extension.zip
+gnome-extensions enable workspace-islands@danielbernalo.github.io
+```
+
+Then **log out and back in** — Wayland cannot reload the shell in place.
+
+Check it came up:
+
+```bash
+gnome-extensions info workspace-islands@danielbernalo.github.io   # State: ACTIVE
+```
+
+Requires GNOME Shell 50 on Wayland, at least two monitors, and
+`workspaces-only-on-primary` set to `true`. See the README for the full list.
+
+---
+NOTES
+)"

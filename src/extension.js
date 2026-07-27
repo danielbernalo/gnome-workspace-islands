@@ -12,7 +12,7 @@
 import Gio from 'gi://Gio';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
+import { Extension, gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
 
 import { Registry } from './monitorState.js';
 import { Keybindings } from './keybindings.js';
@@ -154,16 +154,16 @@ export default class WorkspaceIslands extends Extension {
         if (!this._mutterSettings.get_boolean(ONLY_ON_PRIMARY)) {
             Main.notifyError(
                 'Workspace Islands',
-                `Requires ${MUTTER_SCHEMA}.${ONLY_ON_PRIMARY} = true. ` +
-                'Secondary-monitor windows are not sticky without it.'
+                _('Requires %s = true. Secondary-monitor windows are not ' +
+                'sticky without it.').format(`${MUTTER_SCHEMA}.${ONLY_ON_PRIMARY}`)
             );
         }
 
         if (this._isPaperwmEnabled()) {
             Main.notifyError(
                 'Workspace Islands',
-                'PaperWM is enabled. Both extensions fight over ' +
-                `${ONLY_ON_PRIMARY} with opposite values — disable one.`
+                _('PaperWM is enabled. Both extensions fight over %s with ' +
+                'opposite values — disable one.').format(ONLY_ON_PRIMARY)
             );
         }
     }
@@ -229,8 +229,8 @@ export default class WorkspaceIslands extends Extension {
 
             Main.notifyError(
                 'Workspace Islands',
-                `${ONLY_ON_PRIMARY} was turned off. Windows on secondary ` +
-                'monitors are no longer sticky — virtual workspaces will leak.'
+                _('%s was turned off. Windows on secondary monitors are no ' +
+                'longer sticky — virtual workspaces will leak.').format(ONLY_ON_PRIMARY)
             );
         });
 

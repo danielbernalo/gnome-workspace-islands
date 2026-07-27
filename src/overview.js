@@ -80,7 +80,7 @@ import {
 import { isHiddenByUs } from './visibility.js';
 import { VirtualWorkspacesView, tagFor } from './workspacesView.js';
 
-/** Named so the replacement action can be lifted off the group on unload. */
+/** Identifies the replacement action on the group; SwipeTracker uses it too. */
 const TRACKER_NAME = 'workspace-islands overview swipe tracker';
 
 let injector = null;
@@ -113,11 +113,40 @@ export function patch({ getState, onActivate, onDrop, log }) {
 }
 
 export function unpatch() {
+    // Captured before restoreGesture() clears it.
+    const display = gestureDisplay ?? workspacesDisplay();
+
     restoreGesture();
 
     injector?.clear();
     injector = null;
     gestureView = null;
+
+    rebuildSecondaryViews(display);
+}
+
+/**
+ * Hand every secondary monitor back to the shell's own view.
+ *
+ * Clearing the injections restores `_updateWorkspacesView`, so asking each
+ * display to rebuild destroys what this module built and puts an
+ * `ExtraWorkspaceView` back in its place.
+ *
+ * Not housekeeping. A view left behind holds N Workspace pages, a background
+ * manager per thumbnail and possibly a pending idle — objects an extension
+ * created, outliving the extension, which is the one thing the review
+ * guidelines are unambiguous about.
+ */
+function rebuildSecondaryViews(display) {
+    for (const monitorDisplay of display?._workspacesViews ?? []) {
+        if (monitorDisplay?._workspacesView instanceof VirtualWorkspacesView)
+            monitorDisplay._updateWorkspacesView();
+    }
+}
+
+/** Two private hops; `controls` is a public getter, the display beyond is not. */
+function workspacesDisplay() {
+    return Main.overview?._overview?.controls?._workspacesDisplay ?? null;
 }
 
 function patchWindowFilter() {
@@ -264,7 +293,7 @@ function patchSecondaryView(getState, onActivate, onDrop) {
 function takeOverGesture(getState, log) {
     // Two private hops. `controls` is a public getter — the shell reaches
     // through it the same way in overview.js — but the display beyond it is not.
-    const display = Main.overview?._overview?.controls?._workspacesDisplay;
+    const display = workspacesDisplay();
 
     if (!display?._swipeTracker) {
         console.warn('workspace-islands: overview swipe tracker not found — ' +
@@ -355,8 +384,9 @@ function restoreGesture() {
     gestureDisplay._swipeTracker = shellTracker;
     shellTracker.enabled = true;
 
+    // See slide.js for why disabling comes before destroying.
     ourTracker.enabled = false;
-    Main.layoutManager.overviewGroup.remove_action_by_name(TRACKER_NAME);
+    ourTracker.destroy();
 
     gestureDisplay = null;
     shellTracker = null;
