@@ -103,6 +103,21 @@ doctor:
 	@echo "Note: gsettings may report schema defaults instead of real values."
 	@echo "      dconf is the source of truth."
 
+# `gnome-extensions pack` ships extension.js, prefs.js, metadata.json,
+# stylesheet.css and schemas/ — and nothing else. Every other module has to be
+# named with --extra-source. It does not warn about the ones you forget; it
+# produces a bundle that throws on the first import instead.
+#
+# Computed from the directory rather than listed, so a module added later
+# cannot be silently left out of a release.
+EXTRA_SOURCES := $(filter-out extension.js prefs.js,$(notdir $(wildcard $(SRC)/*.js)))
+
 pack: schemas
-	@cd $(SRC) && zip -qr ../$(UUID).shell-extension.zip . -x 'schemas/gschemas.compiled'
+	@cd $(SRC) && gnome-extensions pack --force -o $(CURDIR) \
+	  $(foreach f,$(EXTRA_SOURCES),--extra-source=$(f)) .
 	@echo "packed $(UUID).shell-extension.zip"
+	@python3 -c "import zipfile,sys; \
+z=zipfile.ZipFile('$(CURDIR)/$(UUID).shell-extension.zip'); \
+missing=[f for f in '$(notdir $(wildcard $(SRC)/*.js))'.split() if f not in z.namelist()]; \
+sys.exit('MISSING FROM BUNDLE: '+', '.join(missing)) if missing else \
+print('  %d js modules bundled' % len([n for n in z.namelist() if n.endswith('.js')]))"
