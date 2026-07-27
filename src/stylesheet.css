@@ -1,0 +1,12 @@
+/*
+ * Deliberately empty.
+ *
+ * Every widget this extension draws borrows a style class the shell theme
+ * already defines — `workspace-dot` inside the Activities button, and
+ * `workspace-switcher` / `ws-switcher-indicator` for the on-screen popup. That
+ * is what keeps it looking like GNOME under any theme, including ones that
+ * never heard of this extension.
+ *
+ * A rule added here would be a rule the shell has no matching one for, so
+ * anything landing in this file is worth a second look first.
+ */

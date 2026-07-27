@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="dani-workspaces">
+
+  <schema id="org.gnome.shell.extensions.dani-workspaces"
+          path="/org/gnome/shell/extensions/dani-workspaces/">
+
+    <key name="virtual-workspaces" type="i">
+      <default>4</default>
+      <range min="2" max="8"/>
+      <summary>Number of virtual workspaces per secondary monitor</summary>
+    </key>
+
+    <key name="touchpad-gesture" type="b">
+      <default>true</default>
+      <summary>Switch with a three-finger touchpad swipe</summary>
+      <description>
+        Only on secondary monitors. GNOME's own workspace gesture declines
+        those, so nothing is taken away from the primary monitor.
+      </description>
+    </key>
+
+    <key name="switch-animation" type="b">
+      <default>true</default>
+      <summary>Slide between virtual workspaces</summary>
+      <description>
+        Animates the switch the way GNOME animates its own, instead of showing
+        the minimize animation. Requires briefly cloning the windows involved;
+        turning this off is the cheaper path.
+      </description>
+    </key>
+
+    <key name="switcher-popup" type="b">
+      <default>true</default>
+      <summary>Show an on-screen indicator when switching</summary>
+      <description>
+        Mirrors GNOME's own workspace switcher OSD, on the monitor whose
+        virtual workspace changed. The panel indicator only exists on the
+        primary monitor, so without this a switch is confirmed on a different
+        screen than the one that changed.
+      </description>
+    </key>
+
+    <key name="debug-logging" type="b">
+      <default>false</default>
+      <summary>Log state transitions to the journal</summary>
+    </key>
+
+    <key name="saved-state" type="s">
+      <default>''</default>
+      <summary>Serialised per-monitor arrangement</summary>
+      <description>
+        Versioned JSON, keyed by monitor connector. Holds the active virtual
+        workspace per monitor and the last known workspace per application
+        (by WM_CLASS). Windows themselves cannot be persisted — they have no
+        identity that survives a session — so applications stand in for them.
+        Written by the extension; not intended to be edited by hand.
+      </description>
+    </key>
+
+    <key name="switch-next" type="as">
+      <default><![CDATA[['<Super><Alt>Right']]]></default>
+      <summary>Next virtual workspace on the focused monitor</summary>
+    </key>
+
+    <key name="switch-prev" type="as">
+      <default><![CDATA[['<Super><Alt>Left']]]></default>
+      <summary>Previous virtual workspace on the focused monitor</summary>
+    </key>
+
+    <key name="switch-to-1" type="as">
+      <default><![CDATA[['<Super><Alt>1']]]></default>
+      <summary>Switch the focused monitor to virtual workspace 1</summary>
+    </key>
+    <key name="switch-to-2" type="as">
+      <default><![CDATA[['<Super><Alt>2']]]></default>
+      <summary>Switch the focused monitor to virtual workspace 2</summary>
+    </key>
+    <key name="switch-to-3" type="as">
+      <default><![CDATA[['<Super><Alt>3']]]></default>
+      <summary>Switch the focused monitor to virtual workspace 3</summary>
+    </key>
+    <key name="switch-to-4" type="as">
+      <default><![CDATA[['<Super><Alt>4']]]></default>
+      <summary>Switch the focused monitor to virtual workspace 4</summary>
+    </key>
+    <key name="switch-to-5" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Switch the focused monitor to virtual workspace 5</summary>
+    </key>
+    <key name="switch-to-6" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Switch the focused monitor to virtual workspace 6</summary>
+    </key>
+    <key name="switch-to-7" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Switch the focused monitor to virtual workspace 7</summary>
+    </key>
+    <key name="switch-to-8" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Switch the focused monitor to virtual workspace 8</summary>
+    </key>
+
+    <key name="move-window-to-next" type="as">
+      <default><![CDATA[['<Super><Alt><Shift>Right']]]></default>
+      <summary>Move the focused window to the next virtual workspace</summary>
+    </key>
+
+    <key name="move-window-to-prev" type="as">
+      <default><![CDATA[['<Super><Alt><Shift>Left']]]></default>
+      <summary>Move the focused window to the previous virtual workspace</summary>
+    </key>
+
+  </schema>
+</schemalist>
