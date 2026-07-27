@@ -16,7 +16,7 @@ import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk?version=4.0';
 import Gdk from 'gi://Gdk?version=4.0';
 
-import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
+import { ExtensionPreferences, gettext as _ } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 const MUTTER_SCHEMA = 'org.gnome.mutter';
 const ONLY_ON_PRIMARY = 'workspaces-only-on-primary';
@@ -46,18 +46,18 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
 
     _generalPage(settings) {
         const page = new Adw.PreferencesPage({
-            title: 'General',
+            title: _('General'),
             icon_name: 'preferences-system-symbolic',
         });
 
         const group = new Adw.PreferencesGroup({
-            title: 'Virtual workspaces',
-            description: 'Applies to every monitor other than the primary one. ' +
-                'The primary monitor keeps using GNOME’s own workspaces.',
+            title: _('Virtual workspaces'),
+            description: _('Applies to every monitor other than the primary ' +
+                'one. The primary monitor keeps using GNOME’s own workspaces.'),
         });
 
         const count = new Adw.SpinRow({
-            title: 'Workspaces per monitor',
+            title: _('Workspaces per monitor'),
             adjustment: new Gtk.Adjustment({
                 lower: 2,
                 upper: 8,
@@ -73,10 +73,10 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
         page.add(this._feelGroup(settings));
         page.add(this._diagnosticsGroup());
 
-        const debugGroup = new Adw.PreferencesGroup({ title: 'Troubleshooting' });
+        const debugGroup = new Adw.PreferencesGroup({ title: _('Troubleshooting') });
         const debug = new Adw.SwitchRow({
-            title: 'Debug logging',
-            subtitle: 'Log workspace switches to the journal',
+            title: _('Debug logging'),
+            subtitle: _('Log workspace switches to the journal'),
         });
         settings.bind('debug-logging', debug, 'active',
             Gio.SettingsBindFlags.DEFAULT);
@@ -96,20 +96,20 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
      */
     _feelGroup(settings) {
         const group = new Adw.PreferencesGroup({
-            title: 'Switching',
-            description: 'Matches how GNOME switches its own workspaces.',
+            title: _('Switching'),
+            description: _('Matches how GNOME switches its own workspaces.'),
         });
 
         const rows = [
-            ['touchpad-gesture', 'Touchpad gesture',
-                'Three-finger swipe over a secondary monitor. GNOME’s own ' +
-                'gesture ignores those, so nothing is taken from the primary.'],
-            ['switch-animation', 'Slide animation',
-                'Slide between workspaces instead of showing the minimize ' +
-                'animation. Clones the windows involved while it runs.'],
-            ['switcher-popup', 'On-screen indicator',
-                'The workspace dots GNOME shows on a switch, on the monitor ' +
-                'that changed.'],
+            ['touchpad-gesture', _('Touchpad gesture'),
+                _('Three-finger swipe over a secondary monitor. GNOME’s own ' +
+                'gesture ignores those, so nothing is taken from the primary.')],
+            ['switch-animation', _('Slide animation'),
+                _('Slide between workspaces instead of showing the minimize ' +
+                'animation. Clones the windows involved while it runs.')],
+            ['switcher-popup', _('On-screen indicator'),
+                _('The workspace dots GNOME shows on a switch, on the monitor ' +
+                'that changed.')],
         ];
 
         for (const [key, title, subtitle] of rows) {
@@ -130,9 +130,9 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
      */
     _diagnosticsGroup() {
         const group = new Adw.PreferencesGroup({
-            title: 'Diagnostics',
-            description: 'Windows on secondary monitors must be sticky for ' +
-                'virtual workspaces to work.',
+            title: _('Diagnostics'),
+            description: _('Windows on secondary monitors must be sticky for ' +
+                'virtual workspaces to work.'),
         });
 
         let mutter;
@@ -140,8 +140,8 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
             mutter = new Gio.Settings({ schema_id: MUTTER_SCHEMA });
         } catch {
             const row = new Adw.ActionRow({
-                title: 'Could not read mutter settings',
-                subtitle: `Schema ${MUTTER_SCHEMA} is unavailable`,
+                title: _('Could not read mutter settings'),
+                subtitle: _('Schema %s is unavailable').format(MUTTER_SCHEMA),
             });
             group.add(row);
             return group;
@@ -150,7 +150,7 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
         const row = new Adw.ActionRow({ title: `${MUTTER_SCHEMA}.${ONLY_ON_PRIMARY}` });
 
         const fix = new Gtk.Button({
-            label: 'Turn on',
+            label: _('Turn on'),
             valign: Gtk.Align.CENTER,
         });
         fix.add_css_class('suggested-action');
@@ -162,8 +162,8 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
         const refresh = () => {
             const ok = mutter.get_boolean(ONLY_ON_PRIMARY);
             row.subtitle = ok
-                ? 'Enabled — virtual workspaces can work'
-                : 'Disabled — virtual workspaces will not work';
+                ? _('Enabled — virtual workspaces can work')
+                : _('Disabled — virtual workspaces will not work');
             fix.visible = !ok;
         };
 
@@ -175,15 +175,15 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
 
     _shortcutsPage(settings, window) {
         const page = new Adw.PreferencesPage({
-            title: 'Shortcuts',
+            title: _('Shortcuts'),
             icon_name: 'preferences-desktop-keyboard-symbolic',
         });
 
         const group = new Adw.PreferencesGroup({
-            title: 'Keyboard shortcuts',
-            description: 'Shortcuts act on the monitor holding the focused ' +
+            title: _('Keyboard shortcuts'),
+            description: _('Shortcuts act on the monitor holding the focused ' +
                 'window. On the primary monitor they do nothing, since GNOME’s ' +
-                'own workspace shortcuts already cover it.',
+                'own workspace shortcuts already cover it.'),
         });
 
         for (const [key, title] of SHORTCUTS)
@@ -212,7 +212,7 @@ class ShortcutRow extends Adw.ActionRow {
 
         this._label = new Gtk.ShortcutLabel({
             valign: Gtk.Align.CENTER,
-            disabled_text: 'Disabled',
+            disabled_text: _('Disabled'),
         });
         this.add_suffix(this._label);
 
@@ -245,8 +245,8 @@ class ShortcutRow extends Adw.ActionRow {
         });
 
         const status = new Adw.StatusPage({
-            title: 'Press a shortcut',
-            description: 'Esc to cancel, Backspace to clear',
+            title: _('Press a shortcut'),
+            description: _('Esc to cancel, Backspace to clear'),
             icon_name: 'preferences-desktop-keyboard-symbolic',
         });
         dialog.set_content(status);
