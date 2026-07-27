@@ -76,6 +76,33 @@ would contain every module. All five exist because each caught a real bug
 during development. Everything about behaviour is verified by hand — say what
 you did in the PR.
 
+## Cutting a release
+
+`version` is deliberately absent from `metadata.json`. The
+[official guide](https://gjs.guide/extensions/overview/anatomy.html) is
+explicit that extension developers should not set it: the extensions website
+overrides it, and with it set GNOME Shell may upgrade or downgrade the
+extension on its own. The human-facing string lives in `version-name`.
+
+To release:
+
+1. Bump `version-name` in `src/metadata.json` — 1 to 16 characters, letters,
+   digits, spaces and periods only.
+2. Commit it.
+3. Tag it `v<version-name>` and push the tag.
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+CI builds the bundle and publishes it. It refuses to publish when the tag and
+`version-name` disagree, so a release can never claim a version nothing was
+tagged with.
+
+`make pack` is deterministic — fixed timestamps, sorted entries — so anyone can
+rebuild a tag and compare bytes with what was published.
+
 ## Touching GNOME Shell internals
 
 Most of this extension's risk lives in a handful of places where it patches,

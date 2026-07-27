@@ -41,7 +41,15 @@ gsettings set org.gnome.mutter workspaces-only-on-primary true
 
 ## Install
 
-Not on [extensions.gnome.org](https://extensions.gnome.org) yet. For now, build it yourself:
+Not on [extensions.gnome.org](https://extensions.gnome.org) yet — that route needs review time. Until then, grab the bundle from [Releases](../../releases/latest):
+
+```bash
+gnome-extensions install --force workspace-islands@danielbernalo.github.io.shell-extension.zip
+gnome-extensions enable workspace-islands@danielbernalo.github.io
+```
+
+<details>
+<summary>Or build it from source</summary>
 
 ```bash
 git clone https://github.com/danielbernalo/gnome-workspace-islands
@@ -50,6 +58,10 @@ make pack
 gnome-extensions install --force workspace-islands@danielbernalo.github.io.shell-extension.zip
 gnome-extensions enable workspace-islands@danielbernalo.github.io
 ```
+
+Needs `python3` and `glib-compile-schemas`, both of which you already have on a GNOME system. The build is deterministic — the same commit always produces the same archive, so you can check yours against the released one.
+
+</details>
 
 Then **log out and back in**. Wayland cannot reload the shell in place, so a new extension is not picked up until the session restarts.
 

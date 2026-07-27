@@ -56,7 +56,20 @@ jobs:
           if schemas[0].name != f'{defined}.gschema.xml':
               sys.exit(f'schema id {defined!r} does not match filename {schemas[0].name!r}')
 
-          print(f'ok: {defined}')
+          # The guide is explicit: `version` SHOULD NOT be set by developers.
+          # extensions.gnome.org overrides it, and with it set GNOME Shell may
+          # upgrade or downgrade the extension on its own.
+          if 'version' in meta:
+              sys.exit('metadata.json must not set "version" — use "version-name"')
+
+          name = meta.get('version-name')
+          if not name:
+              sys.exit('metadata.json is missing "version-name"')
+
+          if not re.fullmatch(r'(?!^[. ]+$)[a-zA-Z0-9 .]{1,16}', name):
+              sys.exit(f'version-name {name!r} fails the documented pattern')
+
+          print(f'ok: {defined} @ {name}')
           EOF
 
       # A module renamed but not updated at its import site throws on load and
@@ -78,27 +91,8 @@ jobs:
           print('ok')
           EOF
 
-      # `gnome-extensions pack` ships only extension.js, prefs.js, metadata.json,
-      # stylesheet.css and schemas/. Everything else needs --extra-source, and it
-      # warns about none of them — the bundle just throws on first import.
-      - name: Bundle would include every module
-        run: |
-          python3 - <<'EOF'
-          import pathlib, re, subprocess, sys
-
-          makefile = pathlib.Path('Makefile').read_text()
-          if '--extra-source' not in makefile:
-              sys.exit('pack target no longer passes --extra-source')
-
-          listed = subprocess.run(
-              ['make', '-s', 'print-extra-sources'],
-              capture_output=True, text=True, check=True).stdout.split()
-
-          expected = {p.name for p in pathlib.Path('src').glob('*.js')}
-          expected -= {'extension.js', 'prefs.js'}
-
-          if set(listed) != expected:
-              sys.exit(f'pack would miss: {sorted(expected - set(listed))}')
-
-          print(f'ok: {len(listed)} extra modules')
-          EOF
+      # The pack target asserts that every module made it into the archive.
+      # It once shipped 2 of 12, because `gnome-extensions pack` drops whatever
+      # is not named with --extra-source and warns about none of it.
+      - name: Bundle builds and is complete
+        run: make pack

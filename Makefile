@@ -2,10 +2,11 @@ UUID    := workspace-islands@danielbernalo.github.io
 SRC     := $(CURDIR)/src
 TARGET  := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 
-.PHONY: help schemas install uninstall enable disable doctor pack nested logs status
+.PHONY: help schemas skills install uninstall enable disable doctor pack nested logs status
 
 help:
 	@echo "make doctor     check every precondition — run this first when something's off"
+	@echo "make skills     fetch agent skills pinned in skills-lock.json"
 	@echo "make schemas    compile gsettings schemas"
 	@echo "make install    compile schemas + symlink src/ into GNOME's extension dir"
 	@echo "make enable     add the uuid to enabled-extensions (linking is not enabling)"
@@ -104,24 +105,51 @@ doctor:
 	@echo "Note: gsettings may report schema defaults instead of real values."
 	@echo "      dconf is the source of truth."
 
-# `gnome-extensions pack` ships extension.js, prefs.js, metadata.json,
-# stylesheet.css and schemas/ — and nothing else. Every other module has to be
-# named with --extra-source. It does not warn about the ones you forget; it
-# produces a bundle that throws on the first import instead.
+# The bundle is a flat zip: every module at the root, schemas/ holding only the
+# XML — the shell compiles it at install time — plus the licence, because what
+# a user downloads should carry the terms it ships under.
 #
-# Computed from the directory rather than listed, so a module added later
-# cannot be silently left out of a release.
-EXTRA_SOURCES := $(filter-out extension.js prefs.js,$(notdir $(wildcard $(SRC)/*.js)))
-
+# Built with python rather than `gnome-extensions pack` or `zip`. The first
+# lives in the gnome-shell package, so a CI runner would have to install a
+# desktop to produce an archive; the second is simply absent on plenty of
+# machines, which is how this target was broken before. python3 is already a
+# dependency of the targets above.
+#
+# Deterministic on purpose: fixed timestamps and sorted entries, so the same
+# tree always produces the same bytes and a release can be reproduced.
 pack: schemas
-	@cd $(SRC) && gnome-extensions pack --force -o $(CURDIR) \
-	  $(foreach f,$(EXTRA_SOURCES),--extra-source=$(f)) .
-	@echo "packed $(UUID).shell-extension.zip"
-	@python3 -c "import zipfile,sys; \
-z=zipfile.ZipFile('$(CURDIR)/$(UUID).shell-extension.zip'); \
-missing=[f for f in '$(notdir $(wildcard $(SRC)/*.js))'.split() if f not in z.namelist()]; \
-sys.exit('MISSING FROM BUNDLE: '+', '.join(missing)) if missing else \
-print('  %d js modules bundled' % len([n for n in z.namelist() if n.endswith('.js')]))"
+	@python3 -c "$$PACK_SCRIPT"
 
-print-extra-sources:
-	@echo $(EXTRA_SOURCES)
+define PACK_SCRIPT
+import pathlib, zipfile
+
+root = pathlib.Path('$(CURDIR)')
+src = root / 'src'
+out = root / '$(UUID).shell-extension.zip'
+
+members = sorted(
+    p for p in src.rglob('*')
+    if p.is_file() and p.name != 'gschemas.compiled')
+
+with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+    for path in members:
+        info = zipfile.ZipInfo(str(path.relative_to(src)), (1980, 1, 1, 0, 0, 0))
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = 0o644 << 16
+        z.writestr(info, path.read_bytes())
+
+    licence = zipfile.ZipInfo('LICENSE', (1980, 1, 1, 0, 0, 0))
+    licence.compress_type = zipfile.ZIP_DEFLATED
+    licence.external_attr = 0o644 << 16
+    z.writestr(licence, (root / 'LICENSE').read_bytes())
+
+modules = {p.name for p in src.glob('*.js')}
+packed = set(z.namelist())
+missing = sorted(modules - packed)
+if missing:
+    raise SystemExit('MISSING FROM BUNDLE: ' + ', '.join(missing))
+
+print('  packed %s' % out.name)
+print('  %d js modules, %d files' % (len(modules), len(packed)))
+endef
+export PACK_SCRIPT
