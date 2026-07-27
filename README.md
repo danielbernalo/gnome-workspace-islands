@@ -215,36 +215,6 @@ Super+1..4, untouched        Map<index, Set<window>>
                              switch = show set B, hide set A
 ```
 
-### Why minimize, and not something subtler
-
-Everything rests on how a window is made to stop being visible. Two candidates were built side by side and compared under real use:
-
-| | `actor-hide` | `minimize` ✅ chosen |
-| --- | --- | --- |
-| Visual | Instant, no animation | Minimize animation |
-| Window state | Untouched | Mutter knows it is minimized |
-| Focus | Must be handled manually | Handled by the WM |
-| Survives a native workspace switch | **No — gets overwritten** | **Yes** |
-| Risk | Inconsistent state on a crash | Lower |
-
-**`actor-hide` is overwritten by native workspace switches.** A switch walks the window actors and shows those belonging to the incoming workspace. Sticky windows belong to *every* workspace, so Mutter showed all of them and every virtual workspace landed on screen at once.
-
-That could be worked around by reasserting visibility one frame later — but that is a race against the shell, not a fix.
-
-`minimize` is structurally immune. Minimized state is real window state, not a flag Mutter recomputes, so a workspace switch leaves it alone. No race to lose, and focus handover comes free because the window manager already knows a minimized window cannot hold focus.
-
-The cost is the minimize animation and the marker in the dash. Both were judged acceptable; the race was not.
-
-### Where it touches GNOME
-
-Five shell seams, all in `src/overview.js` and `src/slide.js` on purpose: when a GNOME update breaks this extension, those are the files to open.
-
-The two that cost the most to discover:
-
-**A second swipe tracker can never work.** `TouchpadSwipeGesture` claims every three-finger swipe on orientation alone, knows nothing about monitors, and returns `EVENT_STOP` even when its owner declined the gesture. And overriding the handlers does not work either: they are connected with `.bind(this)` at construction, which captures the original function before any extension exists — the override installs, reports success, and is never called. The shell's tracker is disabled and replaced instead.
-
-**GNOME's workspace thumbnails deliberately omit minimized windows** (`_isOverviewWindow` requires `showing_on_its_workspace()`), which here would be every window on every inactive workspace. A faithful copy would render identical empty rectangles. The strip uses `Shell.WindowPreviewLayout` — the C layout `WindowPreview` builds on, which paints the window texture rather than cloning a possibly unmapped actor.
-
 ### Layout
 
 ```
@@ -263,6 +233,182 @@ src/
 ├── prefs.js          GTK4/Adwaita preferences (separate process)
 └── schemas/          gsettings schema
 ```
+
+## Questions this design invites
+
+Anyone reading the source — a reviewer, or you in six months — will hit the same
+handful of "why on earth". Here they are, answered.
+
+### Why does it patch so much of GNOME Shell?
+
+Because the thing it does has no public API anywhere. Mutter's data model is
+`window → workspace`, with the monitor absent from that relationship; the shell
+draws secondary monitors through a class chosen by a setting; and the gesture
+machinery decides which monitor a swipe belongs to in a place extensions cannot
+reach. Every seam below exists because there is no supported way to do the same
+thing.
+
+Eight of them, all reachable from two files:
+
+| Seam | Why |
+| --- | --- |
+| `Workspace._isOverviewWindow` | Splits one page of "every window on this monitor" into N virtual ones |
+| `Workspace.handleDragOver` / `acceptDrop` | The originals compare monitors, which is true of every page, so every drop was refused |
+| `SecondaryMonitorDisplay._updateWorkspacesView` | Chooses the scrolling view instead of the single-workspace one |
+| `WorkspacesDisplay._onScrollEvent` | Wheel scrolling is declined for non-primary monitors |
+| `WindowSwitcherPopup._getWindowList` | Keeps parked windows out of the window switcher |
+| Two `SwipeTracker` replacements | See below |
+
+Each override degrades rather than throws: a missing method costs a feature and
+logs a warning, it does not take the session down. All of them are undone in
+`disable()`.
+
+### Why replace the swipe tracker instead of overriding its handlers?
+
+Because overriding them does nothing, silently. The shell connects like this:
+
+```js
+swipeTracker.connect('begin', this._switchWorkspaceBegin.bind(this));
+```
+
+`.bind()` resolves the method and captures that function object at construction
+time — shell startup, long before any extension is enabled. Replacing the
+method afterwards, on the prototype or the instance, leaves the already-bound
+handler pointing at the original. The override installs, reports success, and is
+never called.
+
+Adding a second tracker alongside does not work either. `TouchpadSwipeGesture`
+enters its handling state on swipe *orientation* alone, knows nothing about
+monitors, and returns `Clutter.EVENT_STOP` even when its owner declined the
+gesture. Emission of `event` stops at the first handler returning true, and the
+shell connects at startup while an extension connects at `enable()`.
+
+So the shell's tracker is disabled — a disabled tracker's gestures return
+`EVENT_PROPAGATE`, which is what frees the events — and a replacement takes its
+place on `_swipeTracker`, where the shell's own `_updateSwipeTracker` and
+`_updateTrackerOrientation` keep managing it. Gestures that are not ours are
+handed to the original methods, which are left unpatched precisely so they can
+be called.
+
+### Why do the thumbnails use `Shell.WindowPreviewLayout` and not `Clutter.Clone`?
+
+Because a clone of a minimized window paints nothing, and on an inactive virtual
+workspace every window is minimized.
+
+GNOME's own thumbnails do not have to care — they filter minimized windows out
+on purpose:
+
+```js
+// WorkspaceThumbnail._isOverviewWindow
+return !win.get_meta_window().skip_taskbar &&
+       win.get_meta_window().showing_on_its_workspace();
+```
+
+`showing_on_its_workspace()` is false when minimized. Copying that faithfully
+would have rendered a row of identical empty rectangles. `WindowPreview` avoids
+it by building on `Shell.WindowPreviewLayout`, a C layout manager that paints
+the window's texture rather than cloning a possibly unmapped actor; the strip
+uses the same thing.
+
+### Why minimize windows instead of hiding their actors?
+
+Both were built and compared under real use:
+
+| | `actor-hide` | `minimize` ✅ chosen |
+| --- | --- | --- |
+| Visual | Instant, no animation | Minimize animation |
+| Window state | Untouched | Mutter knows it is minimized |
+| Focus | Must be handled manually | Handled by the WM |
+| Survives a native workspace switch | **No — gets overwritten** | **Yes** |
+| Risk | Inconsistent state on a crash | Lower |
+
+Hiding the actor is instant and animation-free, and it loses a race. A native
+workspace switch walks the window actors and shows those belonging to the
+incoming workspace. With `workspaces-only-on-primary` on, secondary-monitor
+windows are sticky — they belong to *every* workspace — so the shell showed all
+of them and every virtual workspace landed on screen at once.
+
+That could be papered over by re-hiding a frame later, which is a race against
+the shell rather than a fix. Minimized state is real window state that Mutter
+does not recompute, so a switch leaves it alone. Focus handover comes free,
+because the window manager already knows a minimized window cannot hold focus.
+
+The visible cost is the minimize animation and a marker in the dash. Both were
+judged acceptable; the race was not.
+
+### It says "no clones", then it clones. Which is it?
+
+Both, and the distinction is lifetime.
+
+The core model needs no clones at all: windows stay where they are and the
+extension decides which are shown. That is what keeps this from becoming a
+tiling window manager, which is the trap the alternative approach falls into.
+
+The slide animation is the exception. Showing two workspaces side by side means
+cloning their windows — there is no other way, because window actors cannot be
+moved outside their monitor. Those clones live for the ~250ms of the switch and
+are destroyed with the cover. Turning off **Slide animation** in preferences
+removes them entirely and everything else keeps working.
+
+### Why hide the shell's panel indicator instead of removing it?
+
+Because it could not be put back. `WorkspaceIndicators` is a module-private
+`const` in `panel.js` — not exported, not reachable, not constructible from an
+extension. A destroyed one is gone for the rest of the session, so the panel
+would be left permanently altered by an extension the user disabled.
+
+Hiding it and inserting ours at index 0 means `disable()` destroys ours, the
+original becomes the first child again, and `show()` restores the panel exactly
+as it was found.
+
+### Why does it set a property on `Meta.Window` objects?
+
+To tell "the extension parked this window" from "the user minimized it". Without
+that distinction, unloading would un-minimize windows the user had minimized
+themselves.
+
+The key is a namespaced symbol, `Symbol.for('workspace-islands.hidden')`, so it
+cannot collide with a plain property or with another extension's. It is removed
+when the window is restored, and `disable()` restores every window it set it on.
+
+### Why is `version` missing from `metadata.json`?
+
+Because the [guide](https://gjs.guide/extensions/overview/anatomy.html) says not
+to set it:
+
+> This field **SHOULD NOT** be set by extension developers. The GNOME Extensions
+> website will override this field and GNOME Shell may automatically upgrade or
+> downgrade an extension if the `version` field is set.
+
+The user-visible string lives in `version-name`, which is what the Extensions app
+displays. CI enforces both — the absence of one, the documented pattern of the
+other — and refuses to publish a release whose tag disagrees with it.
+
+### Is everything cleaned up when it unloads?
+
+Yes, with one documented exception that cannot be reached from outside.
+
+Every widget, signal and main loop source created is undone in `disable()`,
+including the overview views — clearing the injections restores
+`_updateWorkspacesView`, and asking each display to rebuild destroys what the
+extension built. The swipe trackers use `SwipeTracker.destroy()`, the shell's own
+teardown.
+
+The exception: `ScrollGesture` is connected upstream with a plain `connect` whose
+handler id is discarded, so nothing can disconnect it afterwards. Disabling the
+tracker before destroying it is what makes that leftover inert — every gesture
+returns `EVENT_PROPAGATE` when the tracker is disabled. It is written down in both
+modules rather than left as a silent gap.
+
+### What happens when a GNOME update moves one of these seams?
+
+Something stops working, and the rest keeps going. Every override checks that its
+target exists before installing, logs a warning naming what it could not find,
+and returns. A missing method costs a feature — the overview falls back to the
+shell's own view, the gesture goes away — and never takes the session with it.
+
+Where to look is not a mystery either: all of the seams live in `src/overview.js`
+and `src/slide.js`, each with a comment saying why that seam and not another.
 
 ## Contributing
 
