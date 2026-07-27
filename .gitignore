@@ -10,3 +10,9 @@ src/schemas/gschemas.compiled
 *~
 .idea/
 .vscode/
+
+# Vendored agent skills — third-party docs pulled in by skills-lock.json,
+# with their own provenance and machine-local paths. Tooling, not the
+# extension; re-fetch rather than republish.
+.agents/
+.claude/
