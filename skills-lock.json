@@ -5,7 +5,10 @@
       "source": "tazztone/skills-server",
       "sourceType": "github",
       "skillPath": "skills/gnome-extension-dev/SKILL.md",
-      "computedHash": "f3b4d950a978decf27e9b29190ddde6836fdf8a21242928bce8a42f3b5fd00db"
+      "computedHash": "26405d376c1783c028f39f085ed478ee0a2707256139578da3054b0e4a10703b",
+      "ref": "d4f8f84443e84180499bc9c7a2ca84cb68898491",
+      "refDate": "2026-06-26T15:00:40Z",
+      "patched": "references/*.md links rewritten from absolute file:/// paths"
     }
   }
 }

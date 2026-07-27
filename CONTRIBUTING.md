@@ -52,6 +52,7 @@ Then open a PR against `main` and add exactly one `type:*` label.
 ## Developing
 
 ```bash
+make skills    # fetch the agent skills pinned in skills-lock.json
 make install   # symlink src/ into the extensions dir — edits apply live
 make doctor    # check every precondition; run this first when something is off
 make nested    # launch a nested session for testing
@@ -69,6 +70,14 @@ Three things that cost time if you do not know them:
 - **`make install` and `make pack` are different installs.** The first
   symlinks, so edits apply live; the second installs a copy, so they do not.
   `make doctor` tells you which one you have.
+
+`.agents/` and `.claude/` are not in the repository. The skill under them comes
+from a public repo that declares no licence, and with no licence the default is
+all rights reserved — redistributing it inside a GPL project is not something to
+do casually. `skills-lock.json` pins the source and the exact commit instead, and
+`make skills` fetches it, checks the hash, and re-applies one local patch:
+upstream links its own reference files through absolute `file:///` paths under
+the author's home directory, which resolve on exactly one machine.
 
 There are no automated tests. What CI checks is that every module parses, the
 schema compiles, metadata and schema agree, imports resolve, and the bundle

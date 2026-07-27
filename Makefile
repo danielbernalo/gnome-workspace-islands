@@ -16,6 +16,90 @@ help:
 	@echo "make logs       follow gnome-shell logs"
 	@echo "make status     show install + enable state"
 
+# Agent skills are fetched, not vendored.
+#
+# `.agents/` is gitignored on purpose: the skill under it comes from
+# tazztone/skills-server, which is public but declares no licence — and with no
+# licence the default is all rights reserved, so redistributing it inside a
+# GPL repository is not something to do casually. The lockfile records where it
+# came from and at which commit; this target brings it back.
+#
+# It also re-applies one local patch. Upstream links its own reference files
+# through absolute file:/// paths under the author's home directory, which
+# resolve on exactly one machine.
+skills:
+	@python3 -c "$$SKILLS_SCRIPT"
+
+define SKILLS_SCRIPT
+import hashlib, io, json, pathlib, re, sys, tarfile, urllib.request
+
+root = pathlib.Path('$(CURDIR)')
+lock = json.loads((root / 'skills-lock.json').read_text())
+
+for name, entry in lock['skills'].items():
+    repo, ref = entry['source'], entry['ref']
+    inner = str(pathlib.PurePosixPath(entry['skillPath']).parent)
+
+    print('  %s <- %s@%s' % (name, repo, ref[:8]))
+
+    url = 'https://codeload.github.com/%s/tar.gz/%s' % (repo, ref)
+    with urllib.request.urlopen(url) as response:
+        blob = response.read()
+
+    target = root / '.agents' / 'skills' / name
+    extracted = 0
+
+    with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
+        for member in tar.getmembers():
+            parts = pathlib.PurePosixPath(member.name).parts[1:]
+            prefix = pathlib.PurePosixPath(inner).parts
+
+            if not member.isfile() or parts[:len(prefix)] != prefix:
+                continue
+
+            out = target.joinpath(*parts[len(prefix):])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(tar.extractfile(member).read())
+            extracted += 1
+
+    if not extracted:
+        raise SystemExit('  nothing matched %s in the archive' % inner)
+
+    skill = target / 'SKILL.md'
+    digest = hashlib.sha256(skill.read_bytes()).hexdigest()
+
+    if digest != entry['computedHash']:
+        raise SystemExit(
+            '  hash mismatch: locked %s, got %s\n'
+            '  upstream moved under the pinned ref, which should not happen'
+            % (entry['computedHash'][:12], digest[:12]))
+
+    # Re-apply the local patch. See "patched" in skills-lock.json.
+    text = skill.read_text()
+    before = text.count('file:///')
+    text = re.sub(r'file:///\S*?/skills/%s/references/' % name, 'references/', text)
+
+    note = ('<!--\n'
+            'Locally patched by `make skills`: upstream links its own reference\n'
+            'files through absolute file:/// paths under the author home directory,\n'
+            'which resolve on exactly one machine. Rewritten relative to this file.\n'
+            '-->\n\n')
+
+    if 'Locally patched' not in text:
+        text = text.replace('# GNOME Shell Extensions', note + '# GNOME Shell Extensions', 1)
+
+    skill.write_text(text)
+
+    link = root / '.claude' / 'skills' / name
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(pathlib.Path('../../.agents/skills') / name)
+
+    print('  %d files, hash verified, %d absolute links rewritten' % (extracted, before))
+endef
+export SKILLS_SCRIPT
+
 schemas:
 	glib-compile-schemas $(SRC)/schemas
 
