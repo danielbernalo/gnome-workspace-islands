@@ -1,0 +1,63 @@
+name: Proposal
+description: Argue for a change to how this behaves
+labels: ["type:feature", "status:needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A good proposal is mostly about the problem. If the problem is clear
+        and real, the solution is usually easy to argue about — and sometimes
+        turns out to be something nobody had thought of.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What are you trying to do, and what stops you today? Describe the
+        situation, not the feature you have in mind.
+      placeholder: >
+        When I unplug my laptop at the end of the day, every window from the
+        external monitor piles onto the built-in screen and I lose the layout.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: What should happen instead, concretely enough to disagree with.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you considered and rejected
+      description: >
+        Existing settings, other extensions, a different shape of the same
+        idea. This is the most useful section in the form — it is what stops a
+        discussion from re-treading ground you already covered.
+    validations:
+      required: true
+
+  - type: textarea
+    id: cost
+    attributes:
+      label: What it might cost
+      description: >
+        Optional, and valued. Who might not want this? What could it break or
+        make slower? A proposal that names its own downside gets taken more
+        seriously, not less.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: >
+            I have read **Deliberately not built** in the README and this is
+            not one of those, or I am arguing that the reasoning has changed
+          required: true

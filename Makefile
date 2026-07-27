@@ -122,3 +122,6 @@ z=zipfile.ZipFile('$(CURDIR)/$(UUID).shell-extension.zip'); \
 missing=[f for f in '$(notdir $(wildcard $(SRC)/*.js))'.split() if f not in z.namelist()]; \
 sys.exit('MISSING FROM BUNDLE: '+', '.join(missing)) if missing else \
 print('  %d js modules bundled' % len([n for n in z.namelist() if n.endswith('.js')]))"
+
+print-extra-sources:
+	@echo $(EXTRA_SOURCES)

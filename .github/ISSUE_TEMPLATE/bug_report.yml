@@ -1,0 +1,94 @@
+name: Bug report
+description: Something behaves differently than documented
+labels: ["type:bug", "status:needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Most bugs in a shell extension are reproducible in seconds **if** the
+        report says which GNOME, which monitors, and what the journal said.
+        Without those three, a maintainer is guessing.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got instead.
+      placeholder: |
+        1. Focused a window on my second monitor
+        2. Pressed Super+Alt+2
+        3. Expected the second workspace; the screen went blank instead
+    validations:
+      required: true
+
+  - type: input
+    id: gnome-version
+    attributes:
+      label: GNOME Shell version
+      description: "`gnome-shell --version`"
+      placeholder: "GNOME Shell 50.3"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: session
+    attributes:
+      label: Session type
+      description: "`echo $XDG_SESSION_TYPE`"
+      options:
+        - Wayland
+        - X11
+    validations:
+      required: true
+
+  - type: textarea
+    id: monitors
+    attributes:
+      label: Monitor setup
+      description: >
+        How many monitors, which is primary, and their orientation. This
+        extension only acts on non-primary monitors, so the layout is often
+        the whole answer.
+      placeholder: "Two: 1920x1080 primary, 1080x1920 portrait on the right (secondary)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Journal output
+      description: >
+        Turn on **Debug logging** in preferences, reproduce the problem, then
+        paste the output. Errors matter even when they mention other extensions.
+      value: |
+        <details><summary>journalctl</summary>
+
+        ```
+        # journalctl -f -o cat /usr/bin/gnome-shell | grep -Ei 'workspace-islands|JS ERROR'
+        ```
+
+        </details>
+    validations:
+      required: true
+
+  - type: input
+    id: extensions
+    attributes:
+      label: Other enabled extensions
+      description: "`gnome-extensions list --enabled`"
+      placeholder: "Vitals@CoreCoding.com, clipboard-history@alexsaveau.dev"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: preconditions
+    attributes:
+      label: Preconditions
+      description: "`make doctor` checks all of these at once."
+      options:
+        - label: "`workspaces-only-on-primary` is `true`"
+          required: true
+        - label: PaperWM is not enabled
+          required: true
+        - label: I still see the problem with **Slide animation** turned off
+          required: false

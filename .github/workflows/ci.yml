@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install GLib tools
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-bin
+
+      # gjs cannot parse files importing resource:/// outside a running shell,
+      # and there is no gjs on a runner anyway. Node parses the same syntax.
+      - name: Every module parses
+        run: |
+          fail=0
+          for f in src/*.js; do
+            cp "$f" "/tmp/$(basename "${f%.js}").mjs"
+            node --check "/tmp/$(basename "${f%.js}").mjs" || fail=1
+          done
+          exit $fail
+
+      - name: Schema compiles
+        run: glib-compile-schemas --strict --dry-run src/schemas
+
+      # Renaming the extension touches the uuid, the schema id, the schema
+      # filename and metadata.json independently. Drift between them fails at
+      # enable() time on a user's machine, which is the worst place to find out.
+      - name: Metadata agrees with the schema
+        run: |
+          python3 - <<'EOF'
+          import json, pathlib, re, sys
+
+          meta = json.loads(pathlib.Path('src/metadata.json').read_text())
+          schemas = list(pathlib.Path('src/schemas').glob('*.gschema.xml'))
+
+          if len(schemas) != 1:
+              sys.exit(f'expected exactly one schema, found {len(schemas)}')
+
+          declared = meta['settings-schema']
+          defined = re.search(r'<schema id="([^"]+)"', schemas[0].read_text()).group(1)
+
+          if declared != defined:
+              sys.exit(f'metadata declares {declared!r}, schema defines {defined!r}')
+
+          if schemas[0].name != f'{defined}.gschema.xml':
+              sys.exit(f'schema id {defined!r} does not match filename {schemas[0].name!r}')
+
+          print(f'ok: {defined}')
+          EOF
+
+      # A module renamed but not updated at its import site throws on load and
+      # nowhere earlier.
+      - name: Every relative import resolves
+        run: |
+          python3 - <<'EOF'
+          import pathlib, re, sys
+
+          missing = []
+          for path in pathlib.Path('src').glob('*.js'):
+              for imported in re.findall(r"from '(\./[^']+)'", path.read_text()):
+                  if not (path.parent / imported).exists():
+                      missing.append(f'{path}: {imported}')
+
+          if missing:
+              sys.exit('unresolved imports:\n  ' + '\n  '.join(missing))
+
+          print('ok')
+          EOF
+
+      # `gnome-extensions pack` ships only extension.js, prefs.js, metadata.json,
+      # stylesheet.css and schemas/. Everything else needs --extra-source, and it
+      # warns about none of them — the bundle just throws on first import.
+      - name: Bundle would include every module
+        run: |
+          python3 - <<'EOF'
+          import pathlib, re, subprocess, sys
+
+          makefile = pathlib.Path('Makefile').read_text()
+          if '--extra-source' not in makefile:
+              sys.exit('pack target no longer passes --extra-source')
+
+          listed = subprocess.run(
+              ['make', '-s', 'print-extra-sources'],
+              capture_output=True, text=True, check=True).stdout.split()
+
+          expected = {p.name for p in pathlib.Path('src').glob('*.js')}
+          expected -= {'extension.js', 'prefs.js'}
+
+          if set(listed) != expected:
+              sys.exit(f'pack would miss: {sorted(expected - set(listed))}')
+
+          print(f'ok: {len(listed)} extra modules')
+          EOF
