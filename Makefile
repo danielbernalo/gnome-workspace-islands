@@ -87,8 +87,9 @@ status:
 # Every precondition that has silently broken a test run at least once.
 doctor:
 	@echo "── preconditions ──────────────────────────────"
-	@if [ -L "$(TARGET)" ]; then echo "  OK   symlink installed"; \
-	  else echo "  FAIL symlink missing            -> make install"; fi
+	@if [ -L "$(TARGET)" ]; then echo "  OK   installed (symlink, live from src/)"; \
+	  elif [ -d "$(TARGET)" ]; then echo "  OK   installed (bundle — edits to src/ will NOT apply)"; \
+	  else echo "  FAIL not installed              -> make install"; fi
 	@if dconf read $(ENABLED_KEY) | grep -q "$(UUID)"; then echo "  OK   listed in enabled-extensions"; \
 	  else echo "  FAIL not enabled                -> make enable"; fi
 	@if [ "$$(dconf read /org/gnome/mutter/workspaces-only-on-primary)" = "true" ]; then \
