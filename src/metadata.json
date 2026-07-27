@@ -1,10 +1,10 @@
 {
-  "uuid": "dani-workspaces@danielbernalo.github.io",
-  "name": "Dani Workspaces",
+  "uuid": "workspace-islands@danielbernalo.github.io",
+  "name": "Workspace Islands",
   "description": "Independent per-monitor workspaces for GNOME Shell — rotate workspaces on one monitor without touching the others. No tiling.",
   "shell-version": ["50"],
-  "settings-schema": "org.gnome.shell.extensions.dani-workspaces",
-  "gettext-domain": "dani-workspaces",
-  "url": "https://github.com/danielbernalo/gnome-dani-workspaces",
+  "settings-schema": "org.gnome.shell.extensions.workspace-islands",
+  "gettext-domain": "workspace-islands",
+  "url": "https://github.com/danielbernalo/gnome-workspace-islands",
   "version": 1
 }

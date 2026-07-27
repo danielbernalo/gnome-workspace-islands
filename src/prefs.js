@@ -36,7 +36,7 @@ const SHORTCUTS = [
     ['move-window-to-next', 'Move window to next workspace'],
 ];
 
-export default class DaniWorkspacesPreferences extends ExtensionPreferences {
+export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const settings = this.getSettings();
 

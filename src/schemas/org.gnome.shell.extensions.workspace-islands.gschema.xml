@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<schemalist gettext-domain="dani-workspaces">
+<schemalist gettext-domain="workspace-islands">
 
-  <schema id="org.gnome.shell.extensions.dani-workspaces"
-          path="/org/gnome/shell/extensions/dani-workspaces/">
+  <schema id="org.gnome.shell.extensions.workspace-islands"
+          path="/org/gnome/shell/extensions/workspace-islands/">
 
     <key name="virtual-workspaces" type="i">
       <default>4</default>

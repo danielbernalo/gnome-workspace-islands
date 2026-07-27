@@ -62,7 +62,7 @@ const WorkspaceDot = GObject.registerClass({
             GObject.ParamFlags.READWRITE,
             1.0, 10.0, 1.0),
     },
-}, class DaniWorkspaceDot extends Clutter.Actor {
+}, class IslandsDot extends Clutter.Actor {
     constructor(params = {}) {
         super({
             pivot_point: new Graphene.Point({ x: 0.5, y: 0.5 }),
@@ -147,7 +147,7 @@ const WorkspaceDot = GObject.registerClass({
 });
 
 const Dots = GObject.registerClass(
-class DaniWorkspaceDots extends St.BoxLayout {
+class IslandsDots extends St.BoxLayout {
     _init() {
         super._init();
 

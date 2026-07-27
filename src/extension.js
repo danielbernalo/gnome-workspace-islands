@@ -1,5 +1,5 @@
 /**
- * Dani Workspaces — independent per-monitor workspaces for GNOME Shell.
+ * Workspace Islands — independent per-monitor workspaces for GNOME Shell.
  *
  * Design in one paragraph: keep `workspaces-only-on-primary = true` so windows
  * on secondary monitors are sticky and untouched by native workspace switches,
@@ -28,7 +28,7 @@ const MUTTER_SCHEMA = 'org.gnome.mutter';
 const ONLY_ON_PRIMARY = 'workspaces-only-on-primary';
 const PAPERWM_UUID = 'paperwm@paperwm.github.com';
 
-export default class DaniWorkspaces extends Extension {
+export default class WorkspaceIslands extends Extension {
     enable() {
         this._settings = this.getSettings();
         this._mutterSettings = new Gio.Settings({ schema_id: MUTTER_SCHEMA });
@@ -96,7 +96,7 @@ export default class DaniWorkspaces extends Extension {
         // Unconditional, not behind debug-logging: when nothing appears to
         // happen, the first question is always whether this even loaded, and
         // "zero secondary monitors" is the single most likely answer.
-        console.log(`dani-workspaces: enabled — ` +
+        console.log(`workspace-islands: enabled — ` +
             `${this._registry.states.length} secondary monitor(s), ` +
             `${ONLY_ON_PRIMARY}=${this._mutterSettings.get_boolean(ONLY_ON_PRIMARY)}`);
     }
@@ -153,7 +153,7 @@ export default class DaniWorkspaces extends Extension {
     _checkPreconditions() {
         if (!this._mutterSettings.get_boolean(ONLY_ON_PRIMARY)) {
             Main.notifyError(
-                'Dani Workspaces',
+                'Workspace Islands',
                 `Requires ${MUTTER_SCHEMA}.${ONLY_ON_PRIMARY} = true. ` +
                 'Secondary-monitor windows are not sticky without it.'
             );
@@ -161,7 +161,7 @@ export default class DaniWorkspaces extends Extension {
 
         if (this._isPaperwmEnabled()) {
             Main.notifyError(
-                'Dani Workspaces',
+                'Workspace Islands',
                 'PaperWM is enabled. Both extensions fight over ' +
                 `${ONLY_ON_PRIMARY} with opposite values — disable one.`
             );
@@ -177,7 +177,7 @@ export default class DaniWorkspaces extends Extension {
             const shell = new Gio.Settings({ schema_id: 'org.gnome.shell' });
             return shell.get_strv('enabled-extensions').includes(PAPERWM_UUID);
         } catch (e) {
-            console.warn(`dani-workspaces: could not read enabled extensions: ${e}`);
+            console.warn(`workspace-islands: could not read enabled extensions: ${e}`);
             return false;
         }
     }
@@ -228,7 +228,7 @@ export default class DaniWorkspaces extends Extension {
                 return;
 
             Main.notifyError(
-                'Dani Workspaces',
+                'Workspace Islands',
                 `${ONLY_ON_PRIMARY} was turned off. Windows on secondary ` +
                 'monitors are no longer sticky — virtual workspaces will leak.'
             );
@@ -450,6 +450,6 @@ export default class DaniWorkspaces extends Extension {
 
     _log(message) {
         if (this._settings?.get_boolean('debug-logging'))
-            console.log(`dani-workspaces: ${message}`);
+            console.log(`workspace-islands: ${message}`);
     }
 }

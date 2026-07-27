@@ -55,7 +55,7 @@ export class Persistence {
             return { monitors: parsed.monitors ?? {} };
         } catch (e) {
             // Corrupt state must never take the extension down with it.
-            console.warn(`dani-workspaces: discarding unreadable saved state: ${e}`);
+            console.warn(`workspace-islands: discarding unreadable saved state: ${e}`);
             return { monitors: {} };
         }
     }
@@ -88,7 +88,7 @@ export class Persistence {
                 monitors,
             }));
         } catch (e) {
-            console.warn(`dani-workspaces: could not save state: ${e}`);
+            console.warn(`workspace-islands: could not save state: ${e}`);
         }
     }
 

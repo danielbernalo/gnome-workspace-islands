@@ -89,7 +89,7 @@ const THUMBNAILS_HEIGHT_FRACTION = 0.11;
 let building = null;
 
 /** Marks a Workspace as standing for one virtual workspace. */
-export const VIRTUAL = Symbol('dani-workspaces.virtual');
+export const VIRTUAL = Symbol('workspace-islands.virtual');
 
 /** The tag a Workspace should filter by right now, instance or in-flight. */
 export function tagFor(workspace) {
@@ -115,7 +115,7 @@ function createPage(monitorIndex, overviewAdjustment, tag) {
  * where they are on the real screen.
  */
 const Thumbnail = GObject.registerClass(
-class DaniWorkspaceThumbnail extends St.Widget {
+class IslandsThumbnail extends St.Widget {
     _init(monitor, state, index, onDrop) {
         super._init({
             style_class: 'workspace-thumbnail',
@@ -237,7 +237,7 @@ class DaniWorkspaceThumbnail extends St.Widget {
  * is loaded.
  */
 const Thumbnails = GObject.registerClass(
-class DaniWorkspaceThumbnails extends St.Widget {
+class IslandsThumbnails extends St.Widget {
     _init(monitor, state, onActivate, onDrop) {
         super._init({ style_class: 'workspace-thumbnails' });
 
@@ -326,7 +326,7 @@ class DaniWorkspaceThumbnails extends St.Widget {
 });
 
 export const VirtualWorkspacesView = GObject.registerClass(
-class DaniVirtualWorkspacesView extends ExtraWorkspaceView {
+class IslandsWorkspacesView extends ExtraWorkspaceView {
     /**
      * @param {number} monitorIndex
      * @param {St.Adjustment} overviewAdjustment

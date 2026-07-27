@@ -48,7 +48,7 @@ import { connectorOf } from './monitorState.js';
 const DISPLAY_TIMEOUT = 600;
 
 const MonitorPopup = GObject.registerClass(
-class DaniWorkspacesMonitorPopup extends Clutter.Actor {
+class IslandsMonitorPopup extends Clutter.Actor {
     _init(monitorIndex) {
         super._init({
             offscreen_redirect: Clutter.OffscreenRedirect.ALWAYS,
@@ -120,7 +120,7 @@ class DaniWorkspacesMonitorPopup extends Clutter.Actor {
                 return GLib.SOURCE_REMOVE;
             });
         GLib.Source.set_name_by_id(
-            this._timeoutId, '[dani-workspaces] switcher popup');
+            this._timeoutId, '[workspace-islands] switcher popup');
     }
 
     /**

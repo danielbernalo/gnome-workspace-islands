@@ -81,7 +81,7 @@ import { isHiddenByUs } from './visibility.js';
 import { VirtualWorkspacesView, tagFor } from './workspacesView.js';
 
 /** Named so the replacement action can be lifted off the group on unload. */
-const TRACKER_NAME = 'dani-workspaces overview swipe tracker';
+const TRACKER_NAME = 'workspace-islands overview swipe tracker';
 
 let injector = null;
 
@@ -125,7 +125,7 @@ function patchWindowFilter() {
 
     // Degrade to "the overview shows everything", never to a broken shell.
     if (!proto || typeof proto._isOverviewWindow !== 'function') {
-        console.warn('dani-workspaces: Workspace._isOverviewWindow not found — ' +
+        console.warn('workspace-islands: Workspace._isOverviewWindow not found — ' +
             'the overview will show windows from inactive workspaces');
         return;
     }
@@ -174,7 +174,7 @@ function patchDropTarget() {
     const proto = Workspace?.prototype;
 
     if (!proto || typeof proto.acceptDrop !== 'function') {
-        console.warn('dani-workspaces: Workspace drop handlers not found — ' +
+        console.warn('workspace-islands: Workspace drop handlers not found — ' +
             'windows cannot be dragged between virtual workspaces');
         return;
     }
@@ -213,7 +213,7 @@ function patchSecondaryView(getState, onActivate, onDrop) {
     const proto = SecondaryMonitorDisplay?.prototype;
 
     if (!proto || typeof proto._updateWorkspacesView !== 'function') {
-        console.warn('dani-workspaces: SecondaryMonitorDisplay._updateWorkspacesView ' +
+        console.warn('workspace-islands: SecondaryMonitorDisplay._updateWorkspacesView ' +
             'not found — the overview will show one workspace per secondary monitor');
         return;
     }
@@ -267,7 +267,7 @@ function takeOverGesture(getState, log) {
     const display = Main.overview?._overview?.controls?._workspacesDisplay;
 
     if (!display?._swipeTracker) {
-        console.warn('dani-workspaces: overview swipe tracker not found — ' +
+        console.warn('workspace-islands: overview swipe tracker not found — ' +
             'the overview gesture will not work on secondary monitors');
         return;
     }
@@ -367,7 +367,7 @@ function patchScroll(getState, log) {
     const proto = WorkspacesDisplay?.prototype;
 
     if (!proto || typeof proto._onScrollEvent !== 'function') {
-        console.warn('dani-workspaces: WorkspacesDisplay._onScrollEvent not found — ' +
+        console.warn('workspace-islands: WorkspacesDisplay._onScrollEvent not found — ' +
             'scrolling will not switch workspaces on secondary monitors');
         return;
     }

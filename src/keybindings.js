@@ -28,7 +28,7 @@ export class Keybindings {
         // addKeybinding returns Meta.KeyBindingAction.NONE (0) when the schema
         // key is missing or the accelerator failed to parse.
         if (added === Meta.KeyBindingAction.NONE) {
-            console.warn(`dani-workspaces: could not register keybinding "${name}"`);
+            console.warn(`workspace-islands: could not register keybinding "${name}"`);
             return false;
         }
 

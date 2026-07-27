@@ -1,4 +1,4 @@
-UUID    := dani-workspaces@danielbernalo.github.io
+UUID    := workspace-islands@danielbernalo.github.io
 SRC     := $(CURDIR)/src
 TARGET  := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 

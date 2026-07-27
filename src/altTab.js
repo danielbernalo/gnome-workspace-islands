@@ -43,7 +43,7 @@ export function patch() {
     // Never assume the seam is there. A shell update that renames or drops it
     // must degrade to "Alt+Tab is unfiltered", not to a broken extension.
     if (!proto || typeof proto._getWindowList !== 'function') {
-        console.warn('dani-workspaces: WindowSwitcherPopup._getWindowList not ' +
+        console.warn('workspace-islands: WindowSwitcherPopup._getWindowList not ' +
             'found — Alt+Tab will list windows from inactive workspaces');
         return;
     }

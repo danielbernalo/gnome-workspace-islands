@@ -31,7 +31,7 @@
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 /** Marks a window as minimized *by us*. Never touch windows without it. */
-const HIDDEN = Symbol.for('dani-workspaces.hidden');
+const HIDDEN = Symbol.for('workspace-islands.hidden');
 
 /**
  * True while this module is driving a minimize/unminimize.

@@ -110,7 +110,7 @@ import { connectorOf } from './monitorState.js';
 import { hide, reveal } from './visibility.js';
 
 /** Named so the replacement action can be lifted off the stage on unload. */
-const TRACKER_NAME = 'dani-workspaces swipe tracker';
+const TRACKER_NAME = 'workspace-islands swipe tracker';
 
 /**
  * One workspace, drawn as wallpaper plus clones.
@@ -123,7 +123,7 @@ const TRACKER_NAME = 'dani-workspaces swipe tracker';
  * a single window is revealed behind it.
  */
 const Page = GObject.registerClass(
-class DaniSlidePage extends Clutter.Actor {
+class IslandsSlidePage extends Clutter.Actor {
     _init(monitor) {
         super._init({
             width: monitor.width,
@@ -199,7 +199,7 @@ const Slide = GObject.registerClass({
             GObject.ParamFlags.READWRITE,
             -Infinity, Infinity, 0),
     },
-}, class DaniSlide extends St.Widget {
+}, class IslandsSlide extends St.Widget {
     _init(monitor, indices) {
         super._init({
             clip_to_allocation: true,
@@ -341,7 +341,7 @@ export class SlideController {
     _takeOverTracker() {
         const controller = Main.wm?._workspaceAnimation;
         if (!controller?._swipeTracker) {
-            console.warn('dani-workspaces: no workspace animation swipe tracker, ' +
+            console.warn('workspace-islands: no workspace animation swipe tracker, ' +
                 'touchpad gesture unavailable');
             return;
         }

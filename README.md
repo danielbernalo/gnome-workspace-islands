@@ -1,6 +1,8 @@
-# Dani Workspaces
+# Workspace Islands
 
 Independent per-monitor workspaces for GNOME Shell 50 — rotate through workspaces on one monitor without disturbing what's on the others. **No tiling.**
+
+Each monitor is its own island: it keeps its own set of workspaces, and switching on one leaves every other one exactly where you left it.
 
 > Status: early. Every roadmap item is implemented; the hide strategy was settled by the Phase 0.b spike — see [How hiding works, and why](#how-hiding-works-and-why).
 
@@ -11,7 +13,9 @@ GNOME offers exactly two multi-monitor workspace modes, neither of which is what
 - **Workspaces on all displays** — switching a workspace switches *every* monitor at once.
 - **Workspaces on primary only** — secondary monitors are frozen on a single fixed set of windows.
 
-Truly independent workspaces per monitor, macOS style, [have been requested for years](https://gitlab.gnome.org/GNOME/gnome-shell/-/issues/5195) and do not exist natively. No maintained extension provides them for GNOME 50 either.
+Truly independent workspaces per monitor, macOS style, [have been requested for years](https://gitlab.gnome.org/GNOME/gnome-shell/-/issues/5195) and do not exist natively.
+
+The closest existing extension is [Switch workspaces on active monitor](https://extensions.gnome.org/extension/2911/), which simulates the switch on whichever monitor is active. It supports up to GNOME 48. This one targets 50, keeps per-monitor state that survives a logout, and integrates with the panel indicator, the overview and the touchpad gestures rather than only remapping a shortcut.
 
 ## Why it's hard
 
