@@ -35,16 +35,24 @@
  * while an extension connects at enable(). A second tracker would never see a
  * single event.
  *
- * So the three swipe handlers on the existing controller are overridden
- * instead. When a gesture begins on a secondary monitor this module takes it
- * and confirms the swipe itself; otherwise the original runs untouched and the
- * primary monitor behaves exactly as it always did.
+ * Overriding the controller's three swipe handlers does not work either, and
+ * the reason is worth writing down because it is invisible and cost a full
+ * debugging cycle. `WorkspaceAnimationController` connects them like this:
  *
- * These are private methods of a shell class, which is the fragile kind of
- * dependency this project otherwise avoids. It is accepted here because there
- * is no public seam at all, and it is scoped as tightly as possible: three
- * methods, each a one-line check before delegating, all removed by
- * InjectionManager on unload.
+ *     swipeTracker.connect('begin', this._switchWorkspaceBegin.bind(this));
+ *
+ * `.bind()` resolves the method and captures that function object at
+ * construction time — which is shell startup, long before any extension is
+ * enabled. Replacing the method afterwards, on the prototype or on the
+ * instance, leaves the already-bound handler pointing at the original. The
+ * override installs cleanly, reports success, and is never called.
+ *
+ * So the tracker itself is replaced. The shell's is disabled, which makes its
+ * gestures return `EVENT_PROPAGATE` instead of swallowing the event, and a new
+ * one takes its place on `controller._swipeTracker` — where the shell's own
+ * `_updateSwipeTracker` and `_updateTrackerOrientation` keep managing it. A
+ * gesture on a secondary monitor is handled here; anything else is handed to
+ * the controller's original methods, which are untouched.
  *
  * ## Why clones, after all that
  *
@@ -86,12 +94,13 @@
 import Clutter from 'gi://Clutter';
 import GObject from 'gi://GObject';
 import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
 import St from 'gi://St';
 
-import { InjectionManager } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Background from 'resource:///org/gnome/shell/ui/background.js';
 import * as Layout from 'resource:///org/gnome/shell/ui/layout.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as SwipeTracker from 'resource:///org/gnome/shell/ui/swipeTracker.js';
 import {
     WINDOW_ANIMATION_TIME,
     WORKSPACE_SPACING,
@@ -99,6 +108,9 @@ import {
 
 import { connectorOf } from './monitorState.js';
 import { hide, reveal } from './visibility.js';
+
+/** Named so the replacement action can be lifted off the stage on unload. */
+const TRACKER_NAME = 'dani-workspaces swipe tracker';
 
 /**
  * One workspace, drawn as wallpaper plus clones.
@@ -289,8 +301,10 @@ export class SlideController {
      * @param {object} opts
      * @param {Gio.Settings} opts.settings
      * @param {(monitorIndex: number) => (object|null)} opts.getState
-     * @param {(state: object, index: number) => void} opts.onCommit applies the
-     *   state change; must not animate, the slide already did
+     * @param {(state: object, index: number, info: {gesture: boolean}) => void}
+     *   opts.onCommit applies the state change; must not animate, the slide
+     *   already did. `gesture` distinguishes a swipe from a keypress — the
+     *   shell announces the second with an OSD and the first without one.
      * @param {(state: object, progress: number|null) => void} opts.onProgress
      *   live feedback for the indicator; null ends the preview
      */
@@ -311,51 +325,92 @@ export class SlideController {
                 () => this._cancel())],
         ];
 
-        this._injections = new InjectionManager();
-        this._hookGesture();
+        this._takeOverTracker();
     }
 
     /**
-     * Take over the shell's swipe handlers for secondary monitors.
+     * Replace the controller's swipe tracker with one whose handlers are ours.
      *
-     * Each override is the same shape: ask this module whether it wants the
-     * gesture, and if not, run what was there before. Anything unexpected — a
-     * shell without the controller, a renamed method — leaves the gesture off
-     * rather than taking the extension down with it.
+     * Disabling the shell's is what frees the events: a disabled SwipeTracker's
+     * gestures return EVENT_PROPAGATE instead of EVENT_STOP, so the replacement
+     * — attached to the same actor, later — actually receives them.
+     *
+     * Anything unexpected leaves the gesture off rather than taking the
+     * extension down with it.
      */
-    _hookGesture() {
+    _takeOverTracker() {
         const controller = Main.wm?._workspaceAnimation;
-        if (!controller) {
-            console.warn('dani-workspaces: no workspace animation controller, ' +
+        if (!controller?._swipeTracker) {
+            console.warn('dani-workspaces: no workspace animation swipe tracker, ' +
                 'touchpad gesture unavailable');
             return;
         }
 
-        const self = this;
+        this._controller = controller;
+        this._shellTracker = controller._swipeTracker;
+        this._shellTracker.enabled = false;
 
-        this._injections.overrideMethod(controller, '_switchWorkspaceBegin',
-            original => function (tracker, monitorIndex) {
-                if (self._begin(tracker, monitorIndex))
-                    return;
-
-                original.call(this, tracker, monitorIndex);
+        const tracker = new SwipeTracker.SwipeTracker(
+            global.stage,
+            Clutter.Orientation.HORIZONTAL,
+            Shell.ActionMode.NORMAL,
+            {
+                allowDrag: false,
+                phase: Clutter.EventPhase.CAPTURE,
+                name: TRACKER_NAME,
             });
 
-        this._injections.overrideMethod(controller, '_switchWorkspaceUpdate',
-            original => function (tracker, progress) {
-                if (self._update(progress))
-                    return;
+        global.display.bind_property('compositor-modifiers',
+            tracker, 'scroll-modifiers', GObject.BindingFlags.SYNC_CREATE);
 
-                original.call(this, tracker, progress);
-            });
+        this._signals.push(
+            [tracker, tracker.connect('begin',
+                (t, monitorIndex) => this._onBegin(t, monitorIndex))],
+            [tracker, tracker.connect('update',
+                (t, progress) => this._onUpdate(t, progress))],
+            [tracker, tracker.connect('end',
+                (t, duration, endProgress) => this._onEnd(t, duration, endProgress))]);
 
-        this._injections.overrideMethod(controller, '_switchWorkspaceEnd',
-            original => function (tracker, duration, endProgress) {
-                if (self._end(duration, endProgress))
-                    return;
+        this._tracker = tracker;
+        controller._swipeTracker = tracker;
+    }
 
-                original.call(this, tracker, duration, endProgress);
-            });
+    /**
+     * Ours, or the shell's.
+     *
+     * Delegation calls the controller's own methods, which are not patched —
+     * they behave exactly as they would have if this module were not loaded.
+     */
+    _onBegin(tracker, monitorIndex) {
+        if (!this._begin(tracker, monitorIndex))
+            this._controller._switchWorkspaceBegin(tracker, monitorIndex);
+    }
+
+    _onUpdate(tracker, progress) {
+        if (!this._update(progress))
+            this._controller._switchWorkspaceUpdate(tracker, progress);
+    }
+
+    _onEnd(tracker, duration, endProgress) {
+        if (!this._end(duration, endProgress))
+            this._controller._switchWorkspaceEnd(tracker, duration, endProgress);
+    }
+
+    _restoreTracker() {
+        if (!this._controller)
+            return;
+
+        this._controller._swipeTracker = this._shellTracker;
+        this._shellTracker.enabled = true;
+        this._shellTracker = null;
+
+        if (this._tracker) {
+            this._tracker.enabled = false;
+            global.stage.remove_action_by_name(TRACKER_NAME);
+            this._tracker = null;
+        }
+
+        this._controller = null;
     }
 
     /**
@@ -383,7 +438,7 @@ export class SlideController {
                 ? [state.activeIndex, index]
                 : [index, state.activeIndex];
 
-        const session = this._prepare(state, pages);
+        const session = this._prepare(state, pages, false);
         if (!session)
             return false;
 
@@ -399,11 +454,7 @@ export class SlideController {
 
     destroy() {
         this._cancel();
-
-        // clear(), not clearAllOverrides() — the latter does not exist, and
-        // guessing it here would throw in the one place a throw is unrecoverable.
-        this._injections?.clear();
-        this._injections = null;
+        this._restoreTracker();
 
         for (const [object, id] of this._signals ?? [])
             object.disconnect(id);
@@ -420,7 +471,7 @@ export class SlideController {
      * paints at frame boundaries, so the intermediate states — a cover of bare
      * wallpaper, windows un-minimized but not yet cloned — are never drawn.
      */
-    _prepare(state, indices) {
+    _prepare(state, indices, gesture) {
         const monitorIndex = monitorIndexOf(state.connector);
         if (monitorIndex < 0)
             return null;
@@ -465,7 +516,7 @@ export class SlideController {
 
         slide.progress = slide.progressFor(state.activeIndex);
 
-        this._session = { state, slide, revealed };
+        this._session = { state, slide, revealed, gesture };
         return this._session;
     }
 
@@ -484,7 +535,7 @@ export class SlideController {
         this._session = null;
         this._claimed = false;
 
-        this._onCommit(session.state, index);
+        this._onCommit(session.state, index, { gesture: session.gesture });
         this._settle(session, index);
         this._teardown(session);
     }
@@ -540,15 +591,17 @@ export class SlideController {
 
         if (this._session) {
             // A swipe landing on a running animation adopts it. Its transition
-            // is dropped, which also drops the onComplete that would commit.
+            // is dropped, which also drops the onComplete that would commit —
+            // and it becomes a gesture, so it lands without an OSD.
             this._session.slide.remove_all_transitions();
+            this._session.gesture = true;
         } else {
             const state = this._getState(monitorIndex);
             if (!state || state.size < 2)
                 return false;
 
             const active = state.activeIndex;
-            if (!this._prepare(state, [active - 1, active, active + 1]))
+            if (!this._prepare(state, [active - 1, active, active + 1], true))
                 return false;
         }
 

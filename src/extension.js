@@ -71,7 +71,8 @@ export default class DaniWorkspaces extends Extension {
         this._slide = new SlideController({
             settings: this._settings,
             getState: index => this._registry?.forMonitorIndex(index) ?? null,
-            onCommit: (state, index) => this._commitSwitch(state, index),
+            onCommit: (state, index, { gesture }) =>
+                this._commitSwitch(state, index, { announce: !gesture }),
             onProgress: (state, value) =>
                 this._indicator?.setPreview(state, value),
         });
@@ -351,15 +352,22 @@ export default class DaniWorkspaces extends Extension {
      * Apply the switch.
      *
      * @param {object} [options]
-     * @param {boolean} [options.slid] true when a slide already showed this —
-     *   suppresses both the minimize animation and the popup, which would be a
-     *   second announcement of something the user just watched happen
+     * @param {boolean} [options.slid] a slide already showed this, so the
+     *   minimize animation must not play on top of it
+     * @param {boolean} [options.announce] show the on-screen popup
+     *
+     * The two are independent, which is not obvious and is worth stating.
+     * GNOME shows the OSD on a *keyboard* switch even though the workspace also
+     * slides (`_showWorkspaceSwitcher` runs the animation and then displays the
+     * popup), and shows nothing on a swipe, where the movement under your
+     * fingers is the feedback. Tying the popup to "did it slide" would silence
+     * it for every shortcut.
      */
-    _commitSwitch(state, index, { slid = true } = {}) {
+    _commitSwitch(state, index, { slid = true, announce = true } = {}) {
         if (!state.switchTo(index, { animate: !slid }))
             return;
 
-        if (!slid)
+        if (announce)
             this._popup?.show(state);
 
         this._afterChange(
