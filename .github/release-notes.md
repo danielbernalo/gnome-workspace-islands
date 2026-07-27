@@ -4,10 +4,17 @@ Download the `.zip` below, then:
 
 ```bash
 gnome-extensions install --force workspace-islands@danielbernalo.github.io.shell-extension.zip
-gnome-extensions enable workspace-islands@danielbernalo.github.io
 ```
 
-Then **log out and back in** — Wayland cannot reload the shell in place.
+Now **log out and back in** — Wayland cannot reload the shell in place, and until
+the session restarts the shell does not know the extension exists.
+
+That is why enabling comes *after* the restart. Run it earlier and you get
+`Extension … does not exist`, because you are asking a shell that has not looked yet:
+
+```bash
+gnome-extensions enable workspace-islands@danielbernalo.github.io
+```
 
 Check it came up:
 
