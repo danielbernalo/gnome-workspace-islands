@@ -30,6 +30,20 @@ jobs:
           done
           exit $fail
 
+      # The release workflow is never exercised by CI until a tag exists, so a
+      # YAML error in it stays invisible until the moment it matters. One did.
+      - name: Workflows parse
+        run: |
+          python3 -c "
+          import pathlib, sys, yaml
+          for path in sorted(pathlib.Path('.github/workflows').glob('*.yml')):
+              try:
+                  yaml.safe_load(path.read_text())
+              except yaml.YAMLError as error:
+                  sys.exit(f'{path}: {error}')
+              print(f'ok: {path}')
+          "
+
       - name: Schema compiles
         run: glib-compile-schemas --strict --dry-run src/schemas
 
