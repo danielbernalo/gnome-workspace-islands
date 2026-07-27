@@ -1,39 +1,197 @@
+<div align="center">
+
+<img src="docs/banner.png" alt="Two cartoon monitors shaking hands at a control panel, each with its own stack of workspaces" width="560">
+
 # Workspace Islands
 
-Independent per-monitor workspaces for GNOME Shell 50 — rotate through workspaces on one monitor without disturbing what's on the others. **No tiling.**
+</div>
 
-Each monitor is its own island: it keeps its own set of workspaces, and switching on one leaves every other one exactly where you left it.
+**Independent workspaces on every monitor, for GNOME Shell 50.** Switch workspaces on one screen and the others stay exactly where you left them. No tiling, no new window manager, no relearning GNOME.
 
-> Status: early. Every roadmap item is implemented; the hide strategy was settled by the Phase 0.b spike — see [How hiding works, and why](#how-hiding-works-and-why).
+Each monitor is its own island: it keeps its own set of workspaces, and nothing you do on one disturbs the rest.
+
+> **Status: early.** Everything described here works, but it has been used by one person on one machine. Bug reports are genuinely useful right now.
 
 ## The problem
 
-GNOME offers exactly two multi-monitor workspace modes, neither of which is what people usually want:
+GNOME gives you exactly two multi-monitor modes, and neither is what most people want:
 
-- **Workspaces on all displays** — switching a workspace switches *every* monitor at once.
-- **Workspaces on primary only** — secondary monitors are frozen on a single fixed set of windows.
+| Mode | What happens |
+| --- | --- |
+| Workspaces on all displays | Switching a workspace switches **every** monitor at once |
+| Workspaces on primary only | Secondary monitors are **frozen** on one fixed set of windows |
+| **Workspace Islands** | Each monitor rotates through its **own** workspaces, independently |
 
-Truly independent workspaces per monitor, macOS style, [have been requested for years](https://gitlab.gnome.org/GNOME/gnome-shell/-/issues/5195) and do not exist natively.
+Truly independent per-monitor workspaces, macOS style, [have been requested for years](https://gitlab.gnome.org/GNOME/gnome-shell/-/issues/5195) and do not exist natively.
 
-The closest existing extension is [Switch workspaces on active monitor](https://extensions.gnome.org/extension/2911/), which simulates the switch on whichever monitor is active. It supports up to GNOME 48. This one targets 50, keeps per-monitor state that survives a logout, and integrates with the panel indicator, the overview and the touchpad gestures rather than only remapping a shortcut.
+The closest existing extension is [Switch workspaces on active monitor](https://extensions.gnome.org/extension/2911/), which simulates the switch on whichever monitor is active and supports up to GNOME 48. This one targets 50, keeps per-monitor state that survives a logout, and integrates with the panel indicator, the overview and the touchpad gestures rather than only remapping a shortcut.
 
-## Why it's hard
+## Before you install
 
-In Mutter a workspace belongs to the **display**, not to the monitor. The data model is `window → workspace`; the monitor isn't part of that relationship, and only one workspace is active at a time across the whole display.
+- [ ] **GNOME Shell 50**, on Wayland
+- [ ] **At least two monitors** — the extension only acts on non-primary ones, so a single display gives it nothing to do
+- [ ] **PaperWM disabled**, if you have it — the two fight over the same mutter setting with opposite values
+- [ ] `org.gnome.mutter workspaces-only-on-primary` set to `true`
 
-On top of that, `MetaWindowActor`s can't be freely relocated. From PaperWM's `tiling.js`:
+The last one is the setting everything rests on. The extension checks it, warns you if it is off, and offers a one-click fix in its preferences. To set it by hand:
+
+```bash
+gsettings set org.gnome.mutter workspaces-only-on-primary true
+```
+
+## Install
+
+Not on [extensions.gnome.org](https://extensions.gnome.org) yet. For now, build it yourself:
+
+```bash
+git clone https://github.com/danielbernalo/gnome-workspace-islands
+cd gnome-workspace-islands
+make pack
+gnome-extensions install --force workspace-islands@danielbernalo.github.io.shell-extension.zip
+gnome-extensions enable workspace-islands@danielbernalo.github.io
+```
+
+Then **log out and back in**. Wayland cannot reload the shell in place, so a new extension is not picked up until the session restarts.
+
+Verify it loaded:
+
+```bash
+gnome-extensions info workspace-islands@danielbernalo.github.io   # State: ACTIVE
+```
+
+If it says `ERROR`, open the Extensions app — it shows the failure with a stack trace, which is the fastest way to report a useful bug.
+
+## Using it
+
+Everything acts on **the monitor holding the focused window**. On the primary monitor the shortcuts do nothing on purpose: GNOME's own workspaces already cover it, and hijacking them would break what already works.
+
+### Keyboard
+
+| Shortcut | Action |
+| --- | --- |
+| `Super+Alt+1…4` | Switch to virtual workspace N |
+| `Super+Alt+←` / `→` | Previous / next virtual workspace |
+| `Super+Alt+Shift+←` / `→` | Move the focused window to the previous / next workspace |
+
+All of them are rebindable in preferences.
+
+> **If you raise the workspace count above 4**, the extra ones have no shortcut until you assign it. `Super+Alt+5…8` are deliberately unbound by default so they do not silently claim keys you may already use.
+
+### Touchpad and mouse
+
+| Gesture | Where | Action |
+| --- | --- | --- |
+| Three-finger swipe ← / → | On a secondary monitor | Switch workspace, following your fingers |
+| Three-finger swipe ← / → | In the overview | Same, on the monitor under the pointer |
+| Two-finger scroll | In the overview | Switch workspace |
+| Mouse wheel | In the overview | Switch workspace |
+
+Over the primary monitor every gesture stays GNOME's own, untouched.
+
+### The overview
+
+Press `Super`. A secondary monitor now scrolls through its virtual workspaces the way the primary scrolls through native ones — active workspace centred, neighbours peeking at the edges, thumbnail strip above.
+
+- **Click a window** to go to it. The monitor switches to whichever workspace holds it.
+- **Drag a window onto a thumbnail** to move it to that workspace.
+- **Drag a window in from the primary monitor** and drop it on the page you are looking at.
+
+### Reading where you are
+
+The **workspace dots in the top bar** — the ones that replaced the "Activities" label in GNOME 48 — follow the monitor you are working on. Focused on the primary, they show native workspaces and behave exactly as they always have. Move focus to a secondary monitor and the same dots show that monitor's workspaces instead. One indicator, always describing the screen you are on.
+
+On a switch, the familiar **pill with dots** appears on the monitor that changed, not on the primary.
+
+## Preferences
+
+Open with the gear in the Extensions app, or:
+
+```bash
+gnome-extensions prefs workspace-islands@danielbernalo.github.io
+```
+
+### Virtual workspaces
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| **Workspaces per monitor** | `4` | How many workspaces each secondary monitor gets. Range 2–8. Applies to every secondary monitor; the primary keeps using GNOME's own. |
+
+Lowering the count folds everything beyond the new end into the last workspace rather than losing those windows.
+
+### Switching
+
+All three default to **on**, and each buys its polish with something real. That is why they are switches and not assumptions.
+
+| Option | Default | What it does | Turn it off if… |
+| --- | --- | --- | --- |
+| **Touchpad gesture** | on | Three-finger swipe on secondary monitors | You want that gesture free, or it fights something else you use |
+| **Slide animation** | on | Workspaces slide across like GNOME's, instead of showing the minimize animation | You see visual artifacts, or you are on hardware where the extra work costs you. This is the cheapest thing to switch off — everything else keeps working |
+| **On-screen indicator** | on | The dots pill on the monitor that changed | You find it noisy. The panel dots already tell you where you are |
+
+The slide is the one worth understanding: making two workspaces visible side by side requires briefly cloning their windows. The clones live for about a quarter second and are destroyed with the animation, but if anything ever looks wrong during a switch, this switch is the first thing to try.
+
+### Troubleshooting
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| **Debug logging** | off | Logs every workspace switch, gesture and drop to the journal |
+
+With it on, watch what the extension is doing:
+
+```bash
+journalctl -f -o cat /usr/bin/gnome-shell | grep workspace-islands
+```
+
+The **Diagnostics** section of the same page shows the live state of `workspaces-only-on-primary` and offers a button to turn it back on. It is there because that setting is the one thing other software flips underneath you, and when it is off nothing works and the reason is invisible.
+
+## What survives a logout
+
+Windows have **no stable identity across sessions** — a window is a live object, and no id outlives a logout. So "put this exact window back on workspace 2" is not implementable by anyone. What is stored instead:
+
+- **Which workspace each monitor was left on**, keyed by the physical connector, so unplugging a display and plugging it back in returns it to the arrangement you left.
+- **Where each application belongs.** New windows of an app land where you last put that app. A deliberate heuristic: two windows of the same app go to the same place, which is usually right and always correctable by moving the window.
+
+## Troubleshooting
+
+**A shortcut does nothing.** You are probably focused on the primary monitor, where it is a no-op by design. Turn on debug logging and the journal will say so explicitly.
+
+**A window vanished.** The extension hides windows by minimizing them, so anything on an inactive workspace is minimized — visible in the dash, restorable from there. Clicking it un-minimizes it *and* takes you to the workspace it lives on. Disabling the extension restores everything unconditionally.
+
+**Something is badly wrong and you want out.** This turns off every user extension immediately, without a logout and without uninstalling anything:
+
+```bash
+gsettings set org.gnome.shell disable-user-extensions true
+```
+
+Set it back to `false` when you are done. To disable only this one:
+
+```bash
+gnome-extensions disable workspace-islands@danielbernalo.github.io
+```
+
+**Workspaces are leaking into each other.** Something turned `workspaces-only-on-primary` off. The extension notifies you when this happens; the Diagnostics section in preferences turns it back on.
+
+**Windows show a minimized marker in the dash.** Expected. Minimizing is how windows are parked, and it was chosen over the alternatives because it is the only approach that survives a native workspace switch — see below.
+
+## How it works
+
+### Why this is hard
+
+In Mutter a workspace belongs to the **display**, not to the monitor. The data model is `window → workspace`; the monitor is not part of that relationship, and only one workspace is active at a time across the whole display.
+
+On top of that, window actors cannot be freely relocated. From PaperWM's `tiling.js`:
 
 > Clones are necessary due to restrictions mutter places on MetaWindowActors. WindowActors can only live in `global.window_group` and can't be moved reliably outside the monitor.
 
-That's why PaperWM builds a full Clutter clone pipeline — and why it ended up a tiling window manager. **The tiling is a consequence of that architecture, not the goal.**
+That is why PaperWM builds a full clone pipeline — and why it ended up a tiling window manager. **The tiling is a consequence of that architecture, not the goal.**
 
-## The approach here
+### The approach here
 
 The opposite direction, which is what keeps tiling out of the picture.
 
-PaperWM forces `workspaces-only-on-primary = false` (see its `patches.js`) because it wants real native workspaces per monitor, which then requires clones. This extension **keeps that setting `true`**.
+PaperWM forces `workspaces-only-on-primary = false` because it wants real native workspaces per monitor, which then requires clones. This extension **keeps that setting `true`**.
 
-With it on, Mutter marks windows on non-primary monitors as *on-all-workspaces* — sticky. They're already present on every workspace, immune to native switches. So nothing needs cloning, and the problem collapses to a much smaller one:
+With it on, Mutter marks windows on non-primary monitors as *on-all-workspaces* — sticky. They are already present on every workspace, immune to native switches. So nothing needs cloning, and the problem collapses to a much smaller one:
 
 **decide which windows are shown.**
 
@@ -45,92 +203,42 @@ Super+1..4, untouched        Map<index, Set<window>>
                              switch = show set B, hide set A
 ```
 
-No clones. No rendering changes. No tiling.
-
-## How hiding works, and why
+### Why minimize, and not something subtler
 
 Everything rests on how a window is made to stop being visible. Two candidates were built side by side and compared under real use:
 
-|                     | `actor-hide`                        | `minimize` ✅ chosen              |
-| ------------------- | ----------------------------------- | --------------------------------- |
-| Visual              | Instant, no animation               | Minimize animation                |
-| Window state        | Untouched                           | Mutter knows it's minimized       |
-| Focus               | Must be handled manually            | Handled by the WM                 |
-| Survives ws switch  | **No — gets overwritten**           | **Yes**                           |
-| Risk                | Inconsistent state on a crash       | Lower                             |
+| | `actor-hide` | `minimize` ✅ chosen |
+| --- | --- | --- |
+| Visual | Instant, no animation | Minimize animation |
+| Window state | Untouched | Mutter knows it is minimized |
+| Focus | Must be handled manually | Handled by the WM |
+| Survives a native workspace switch | **No — gets overwritten** | **Yes** |
+| Risk | Inconsistent state on a crash | Lower |
 
-**`actor-hide` is overwritten by native workspace switches.** A workspace switch walks the window actors and shows those belonging to the incoming workspace. Sticky windows belong to *every* workspace, so Mutter showed all of them and every virtual workspace landed on screen at once.
+**`actor-hide` is overwritten by native workspace switches.** A switch walks the window actors and shows those belonging to the incoming workspace. Sticky windows belong to *every* workspace, so Mutter showed all of them and every virtual workspace landed on screen at once.
 
-That could be worked around by reasserting visibility on `active-workspace-changed` at idle — but that is a race against the shell, not a fix: re-hiding what the shell just showed, one frame later.
+That could be worked around by reasserting visibility one frame later — but that is a race against the shell, not a fix.
 
-`minimize` is structurally immune. Minimized state is real window state, not a flag on an actor that Mutter recomputes, so a workspace switch leaves it alone. Nothing to reassert, no race, and focus handover comes free because the window manager already knows a minimized window cannot hold focus.
+`minimize` is structurally immune. Minimized state is real window state, not a flag Mutter recomputes, so a workspace switch leaves it alone. No race to lose, and focus handover comes free because the window manager already knows a minimized window cannot hold focus.
 
-The cost is a minimize animation and a minimized marker in the dash. Both were judged acceptable; the race was not.
+The cost is the minimize animation and the marker in the dash. Both were judged acceptable; the race was not.
 
-## Requirements
+### Where it touches GNOME
 
-- GNOME Shell 50, Wayland
-- `org.gnome.mutter workspaces-only-on-primary = true` (the extension warns if it isn't)
-- At least two monitors
-- **PaperWM disabled** — both extensions fight over that setting with opposite values
+Five shell seams, all in `src/overview.js` and `src/slide.js` on purpose: when a GNOME update breaks this extension, those are the files to open.
 
-## Development
+The two that cost the most to discover:
 
-Nested testing requires **Mutter Devkit**, a separate package:
+**A second swipe tracker can never work.** `TouchpadSwipeGesture` claims every three-finger swipe on orientation alone, knows nothing about monitors, and returns `EVENT_STOP` even when its owner declined the gesture. And overriding the handlers does not work either: they are connected with `.bind(this)` at construction, which captures the original function before any extension exists — the override installs, reports success, and is never called. The shell's tracker is disabled and replaced instead.
 
-```bash
-sudo pacman -S mutter-devkit    # Arch / CachyOS
-```
+**GNOME's workspace thumbnails deliberately omit minimized windows** (`_isOverviewWindow` requires `showing_on_its_workspace()`), which here would be every window on every inactive workspace. A faithful copy would render identical empty rectangles. The strip uses `Shell.WindowPreviewLayout` — the C layout `WindowPreview` builds on, which paints the window texture rather than cloning a possibly unmapped actor.
 
-Then:
-
-```bash
-make install   # compile schemas + symlink src/ into GNOME's extension dir
-make nested    # launch Mutter Devkit
-make logs      # follow gnome-shell logs
-make status    # install + enable state
-```
-
-Add a **second virtual display** from the devkit UI before testing — this extension only acts on *secondary* monitors, so a single-display session gives it nothing to do.
-
-Three things that cost time if you don't know them:
-
-- **Wayland has no `Alt+F2 → r`.** The shell cannot be restarted in place; test nested, then log out and back in for a real session.
-- **`--nested` was removed in GNOME 49.beta1.** Mutter Devkit replaced it.
-- **`--wayland` alone does not run nested.** It tries to take over the session and dies with `EBUSY`. `--virtual-monitor` forces the same mode. Neither is a substitute for devkit.
-
-## Default shortcuts
-
-Shortcuts act on the **monitor that has focus**. On the primary monitor they're a no-op, since native workspaces already cover it.
-
-| Shortcut                     | Action                                  |
-| ---------------------------- | --------------------------------------- |
-| `Super+Alt+1..4`             | Switch to virtual workspace N           |
-| `Super+Alt+←` / `→`          | Previous / next virtual workspace       |
-| `Super+Alt+Shift+←` / `→`    | Move focused window between workspaces  |
-
-A **three-finger touchpad swipe** over a secondary monitor does the same thing, following your fingers. Over the primary monitor it stays GNOME's.
-
-In the overview, a secondary monitor scrolls through its virtual workspaces like the primary scrolls through native ones — swipe, two-finger scroll or wheel — and a window can be **dragged onto a thumbnail** to move it to that workspace.
-
-## What you see
-
-Nothing that GNOME doesn't already draw.
-
-The **panel dots** — the ones that replaced the "Activities" label in GNOME 48 — follow the monitor that has focus. Working on the primary monitor, they show native workspaces and behave exactly as they always did. Move focus to a secondary monitor and they show that monitor's virtual workspaces instead. One indicator, always describing the screen you're on.
-
-The shell's own dots are *hidden*, never destroyed: `WorkspaceIndicators` is a module-private `const` in `panel.js`, so a destroyed one could not be rebuilt on unload.
-
-The **on-screen popup** is the same pill GNOME shows on a workspace switch, on the monitor that switched. Its own popup can't be reused — with `workspaces-only-on-primary` on it pins itself to the primary monitor and counts native workspaces — but its style classes can, so it is the same pill.
-
-Both are driven by an `St.Adjustment` holding a *fractional* workspace position, which is how `panel.js` does it. Only whole numbers are written today. That fraction is the seam a touchpad gesture plugs into.
-
-## Layout
+### Layout
 
 ```
 src/
 ├── extension.js      lifecycle, signals, shortcut handlers
-├── monitorState.js   per-monitor virtual workspace model (keyed by connector)
+├── monitorState.js   per-monitor workspace model (keyed by connector)
 ├── visibility.js     hiding via minimize, and why
 ├── slide.js          touchpad gesture and the sliding switch
 ├── keybindings.js    keybinding registration and teardown
@@ -138,118 +246,43 @@ src/
 ├── indicator.js      takes over the panel's own workspace dots
 ├── switcherPopup.js  on-screen dots, on the monitor that switched
 ├── altTab.js         window-switcher filtering
-├── overview.js       the four shell seams the overview needs
+├── overview.js       the shell seams the overview needs
 ├── workspacesView.js scrolling pages and thumbnail strip, ported
 ├── prefs.js          GTK4/Adwaita preferences (separate process)
-├── stylesheet.css    indicator styling
 └── schemas/          gsettings schema
 ```
 
-## What persists, and what can't
+## Contributing
 
-Windows have **no stable identity across sessions** — a `MetaWindow` is a live object, and no id survives a logout. So "put this window back on virtual workspace 2" is not implementable. What is stored instead:
-
-- **Active workspace per monitor**, keyed by connector, so a display returns to the arrangement it was left on.
-- **Per-application placement** (by `WM_CLASS`). New windows of an app land where that app was last put. A heuristic by design: two windows of the same app go to the same place, which is usually right and always correctable by moving the window.
-
-## Roadmap
-
-- [x] 0.a Repo scaffold
-- [x] 0.b Visibility spike — `minimize` won
-- [x] 1 Core state and window tracking
-- [x] 2 Keybindings
-- [x] 3 Panel indicator
-- [x] 4 Overview filtering
-- [x] 5 Alt+Tab filtering
-- [x] 6 Persistence and hotplug
-- [x] Preferences window
-- [x] 7 On-screen switcher popup
-- [x] 8 Panel dots follow the focused monitor
-- [x] 9 Touchpad swipe on secondary monitors
-- [x] 10 Slide preview driven by the swipe
-- [x] 11 Virtual workspaces laid out in the overview
-- [x] 12 Drag a window onto another virtual workspace
-
-**11** was on the "deliberately not built" list until it was asked for, and the
-reason it was there still stands: it is the most update-fragile code here. All
-four shell seams it depends on live in `overview.js` for that reason — when a
-GNOME update breaks this extension, that is the file to open.
-
-`WorkspacesView` and `ThumbnailsBox` are both exported and neither is usable:
-they are built from `MetaWorkspace`, and a virtual workspace has none to give
-them. So the layout arithmetic is ported into `workspacesView.js` — the spacing
-rule that makes neighbours peek by the right amount, the centre-and-shift of the
-scrolling row, the 0.94 scale on whatever is not centred — and the machinery
-around it is not. Fit-mode interpolation is skipped because `_getInitialBoxes`
-skips it for non-primary monitors anyway.
-
-The thumbnails could not be copied even in principle:
-
-```js
-// WorkspaceThumbnail._isOverviewWindow
-return !win.get_meta_window().skip_taskbar &&
-       win.get_meta_window().showing_on_its_workspace();
+```bash
+make install   # symlink src/ into GNOME's extension dir — edits apply live
+make doctor    # check every precondition; run this first when something is off
+make nested    # launch a nested session for testing
+make logs      # follow gnome-shell logs
+make pack      # build the installable bundle
 ```
 
-`showing_on_its_workspace()` is false for a minimized window, so GNOME's
-thumbnails deliberately omit them — which here is every window on every
-inactive virtual workspace. A faithful copy would render identical empty
-rectangles. The pages avoid this because `WindowPreview` builds on
-`Shell.WindowPreviewLayout`, a C layout that paints the window texture instead
-of cloning a possibly unmapped actor, and the strip here uses the same thing.
+Nested testing needs **Mutter Devkit**, a separate package:
 
-Clicking a window needed no code at all: it un-minimizes, and the follow logic
-already reads that as "take me there".
+```bash
+sudo pacman -S mutter-devkit    # Arch / CachyOS
+```
 
-**12** needed less than it looks like, and more than it should have. `Workspace`
-is already a drop target — and already refused ours, because `acceptDrop` bails
-on `this._isMyWindow(window)`, which with a null MetaWorkspace means "is it on
-this monitor" and is therefore true of every window on every page. Comparing
-virtual workspaces instead of monitors is the fix. The thumbnails are new
-targets of their own, and in the scrolling model they are the reachable ones:
-only one page is on screen at a time, so dragging *between* pages is not a
-gesture anyone can perform. Dropping onto the page you are looking at still
-matters for windows dragged in from the primary monitor.
+Add a **second virtual display** from the devkit UI before testing, or the extension has nothing to act on.
 
-Moving a window between virtual workspaces fires no Meta signal — it is a
-minimize, and `Workspace` only listens for workspace and monitor changes — so
-the view rebuilds itself after a drop, deferred to an idle because the accept
-callback is no place to destroy the actor tree the drag just landed on.
+Three things that cost time if you do not know them:
 
-**9 and 10 are one item in two lines.** In GNOME the live preview *is* the
-gesture: `MonitorGroup` binds its `progress` to the same adjustment the panel
-dots read, so a single fractional number drives the sliding windows and the
-stretching dots together. Reproducing that shape is what makes a switch feel
-native instead of imitated, and building either half alone would have meant
-building it twice.
+- **Wayland has no `Alt+F2 → r`.** The shell cannot restart in place. Test nested, then log out and back in for a real session.
+- **GJS caches ES modules for the life of the process.** Editing a file does not affect a running shell, even if you toggle the extension off and on — you need a fresh shell.
+- **`--nested` was removed in GNOME 49.** Mutter Devkit replaced it, and `--wayland` alone is not a substitute: it tries to take over your session and dies with `EBUSY`.
 
-The gesture is not simply free for the taking, which cost a wrong assumption
-before it cost code. `WorkspaceAnimationController._switchWorkspaceBegin` does
-decline non-primary monitors without calling `confirmSwipe()` — but one layer
-down, `TouchpadSwipeGesture` enters its HANDLING state on swipe *orientation*
-alone, knows nothing about monitors, and returns `Clutter.EVENT_STOP` regardless
-of whether anyone confirmed. Emission of `event` stops at the first handler
-returning true, and the shell connects at startup while an extension connects at
-enable(). A second SwipeTracker would never receive an event. So the controller's
-three swipe handlers are overridden instead, and the extension rides the tracker
-that already exists.
+`make install` and `make pack` are different installs. The first symlinks `src/` so edits apply live; the second builds a bundle you install as a copy. `make doctor` tells you which one you have.
 
-The slide walks back the "no clones" claim above: showing two workspaces side by
-side means cloning their windows. Transient clones, destroyed with the cover at
-the end of the switch — not PaperWM's permanent pipeline — but clones. It
-collides with the hide strategy too: a `Clutter.Clone` of a minimized window
-paints nothing, so the incoming workspace has to be un-minimized behind an
-opaque cover before it can be cloned, and the outgoing one can only be minimized
-once the slide is over.
+## Deliberately not built
 
-Both the gesture and the animation can be switched off in preferences, which
-also leaves the shortcuts falling back to the plain minimize behaviour.
+**Filtering the app switcher.** `AppSwitcher` is a module-private const built inline inside its popup's constructor; patching it means reimplementing that constructor. Instead, an outside un-minimize is treated as intent: pick a window from workspace 2 via Alt+Tab, the dash or a notification, and that monitor switches to workspace 2 and takes you there. Better behaviour than hiding it, at none of the risk.
 
-### Deliberately not built
-
-**Filtering the app switcher.** `AppSwitcher` is a module-private `const` built inline inside `AppSwitcherPopup._init`; patching it means reimplementing that constructor. Instead, an outside un-minimize is treated as intent: pick a window from virtual workspace 2 via the app switcher, dash or a notification, and that monitor switches to workspace 2 and takes you there. Better behaviour than hiding it, at none of the risk.
-
-**A panel menu for switching a monitor you are not on.** The indicator used to be its own panel button with a menu listing every monitor's workspaces. It was dropped when the indicator moved into the Activities button: a second panel button with a dropdown is the most obvious tell that an extension is installed, and the shortcuts already cover switching the monitor you are working on. Switching a monitor you are *not* focused on is the only thing lost, and it is rare enough not to earn back the UI.
+**A panel menu for switching a monitor you are not on.** The indicator used to be its own panel button with a dropdown. It was dropped when the indicator moved into the Activities button: a second panel button is the most obvious tell that an extension is installed, and the shortcuts already cover the monitor you are working on. Switching a monitor you are *not* focused on is the only thing lost, and it is rare enough not to earn back the UI.
 
 ## License
 
