@@ -132,7 +132,8 @@ src/
 ├── indicator.js      takes over the panel's own workspace dots
 ├── switcherPopup.js  on-screen dots, on the monitor that switched
 ├── altTab.js         window-switcher filtering
-├── overview.js       overview filtering
+├── overview.js       the four shell seams the overview needs
+├── workspacesView.js scrolling pages and thumbnail strip, ported
 ├── prefs.js          GTK4/Adwaita preferences (separate process)
 ├── stylesheet.css    indicator styling
 └── schemas/          gsettings schema
@@ -160,6 +161,38 @@ Windows have **no stable identity across sessions** — a `MetaWindow` is a live
 - [x] 8 Panel dots follow the focused monitor
 - [x] 9 Touchpad swipe on secondary monitors
 - [x] 10 Slide preview driven by the swipe
+- [x] 11 Virtual workspaces laid out in the overview
+
+**11** was on the "deliberately not built" list until it was asked for, and the
+reason it was there still stands: it is the most update-fragile code here. All
+four shell seams it depends on live in `overview.js` for that reason — when a
+GNOME update breaks this extension, that is the file to open.
+
+`WorkspacesView` and `ThumbnailsBox` are both exported and neither is usable:
+they are built from `MetaWorkspace`, and a virtual workspace has none to give
+them. So the layout arithmetic is ported into `workspacesView.js` — the spacing
+rule that makes neighbours peek by the right amount, the centre-and-shift of the
+scrolling row, the 0.94 scale on whatever is not centred — and the machinery
+around it is not. Fit-mode interpolation is skipped because `_getInitialBoxes`
+skips it for non-primary monitors anyway.
+
+The thumbnails could not be copied even in principle:
+
+```js
+// WorkspaceThumbnail._isOverviewWindow
+return !win.get_meta_window().skip_taskbar &&
+       win.get_meta_window().showing_on_its_workspace();
+```
+
+`showing_on_its_workspace()` is false for a minimized window, so GNOME's
+thumbnails deliberately omit them — which here is every window on every
+inactive virtual workspace. A faithful copy would render identical empty
+rectangles. The pages avoid this because `WindowPreview` builds on
+`Shell.WindowPreviewLayout`, a C layout that paints the window texture instead
+of cloning a possibly unmapped actor, and the strip here uses the same thing.
+
+Clicking a window needed no code at all: it un-minimizes, and the follow logic
+already reads that as "take me there".
 
 **9 and 10 are one item in two lines.** In GNOME the live preview *is* the
 gesture: `MonitorGroup` binds its `progress` to the same adjustment the panel
@@ -191,8 +224,6 @@ Both the gesture and the animation can be switched off in preferences, which
 also leaves the shortcuts falling back to the plain minimize behaviour.
 
 ### Deliberately not built
-
-**A virtual-workspace selector inside the overview.** It would require reaching into the workspace-thumbnails layout — internals with no contract, the most update-fragile part of the codebase — to duplicate navigation the panel indicator and shortcuts already provide.
 
 **Filtering the app switcher.** `AppSwitcher` is a module-private `const` built inline inside `AppSwitcherPopup._init`; patching it means reimplementing that constructor. Instead, an outside un-minimize is treated as intent: pick a window from virtual workspace 2 via the app switcher, dash or a notification, and that monitor switches to workspace 2 and takes you there. Better behaviour than hiding it, at none of the risk.
 

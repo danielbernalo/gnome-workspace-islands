@@ -78,7 +78,17 @@ export default class DaniWorkspaces extends Extension {
         });
 
         AltTabFilter.patch();
-        OverviewFilter.patch();
+        OverviewFilter.patch({
+            getState: index => this._registry?.forMonitorIndex(index) ?? null,
+
+            // The overview is already showing the result, so this commits
+            // silently: no minimize animation to play under it, no OSD to
+            // announce what the user just watched themselves choose.
+            onActivate: (state, index) =>
+                this._commitSwitch(state, index, { announce: false }),
+
+            log: message => this._log(message),
+        });
 
         // Unconditional, not behind debug-logging: when nothing appears to
         // happen, the first question is always whether this even loaded, and

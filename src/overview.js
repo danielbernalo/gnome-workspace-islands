@@ -1,34 +1,123 @@
 /**
- * Overview integration.
+ * Overview integration: the seams, not the widgets.
  *
- * The overview shows every window on a workspace, minimized ones included. Our
- * parked windows are minimized, so without this the overview displays all
- * virtual workspaces at once — the same leak Alt+Tab had, in the one place
- * users go specifically to see what is open.
+ * Everything drawn lives in workspacesView.js. This module is only the set of
+ * shell methods that have to be intercepted to get it on screen, kept in one
+ * place because the list of them *is* the maintenance burden — when a GNOME
+ * update breaks this extension, it will almost certainly break here.
  *
- * `Workspace._isOverviewWindow` is the seam, and it is a good one: exported
- * class, single-purpose predicate, called for each window before a preview is
- * built. Overriding it makes the overview agree with the screen.
+ * There are four, and one of them is not an override at all — see the swipe.
  *
- * Scope note. "Overview integration" could also mean putting a virtual
- * workspace selector inside the overview, next to the native workspace strip.
- * That is deliberately not done here. It would mean reaching into the
- * workspace-thumbnails layout — internals with no contract, the part of this
- * project most likely to break on a GNOME update — to duplicate navigation the
- * panel indicator and keyboard shortcuts already provide. Filtering is the
- * part that fixes a real inconsistency; the selector would be a second way to
- * do something you can already do, bought at the highest maintenance price in
- * the codebase.
+ * ## Workspace._isOverviewWindow — which page a window belongs to
+ *
+ * The overview shows every window on a workspace, minimized ones included; the
+ * method is only `!window.skip_taskbar`. `Workspace._isMyWindow` with a null
+ * MetaWorkspace means "is it on this monitor", so every page starts from the
+ * same candidate set and this predicate is enough to split them apart. Each
+ * page carries a tag and the override reads it off `this`.
+ *
+ * For any Workspace we did not build — the primary monitor's, or a secondary
+ * one we do not manage — it keeps its old job of hiding what we parked.
+ *
+ * ## SecondaryMonitorDisplay._updateWorkspacesView — which view to build
+ *
+ * With `workspaces-only-on-primary` on, secondary monitors always get an
+ * `ExtraWorkspaceView`: one workspace, no scrolling, no thumbnails. Replaced
+ * with the ported view.
+ *
+ * ## The swipe tracker — replaced, not overridden
+ *
+ * `_switchWorkspaceBegin` declines non-primary monitors without calling
+ * `confirmSwipe()`, and one layer down `TouchpadSwipeGesture` has already
+ * claimed the event and returns `Clutter.EVENT_STOP` regardless — so simply
+ * adding a second tracker would never see an event.
+ *
+ * Overriding those three methods does not work either, silently: they are
+ * connected with `.bind(this)` at construction, which captures the original
+ * function object before any extension exists. The whole tracker is swapped
+ * instead. See takeOverGesture below, and slide.js for the same trap outside
+ * the overview.
+ *
+ * ## WorkspacesDisplay._onScrollEvent — the wheel, and two fingers
+ *
+ * A separate path from the swipe, and it fails separately. Scrolling splits in
+ * two before it ever reaches the code above:
+ *
+ *     _onScrollEvent(actor, event) {
+ *         if (this._swipeTracker.canHandleScrollEvent(event))
+ *             return Clutter.EVENT_PROPAGATE;      // finger scroll -> tracker
+ *         ...
+ *         if (this._workspacesOnlyOnPrimary &&
+ *             this._getMonitorIndexForEvent(event) !== this._primaryIndex)
+ *             return Clutter.EVENT_PROPAGATE;      // wheel on secondary: dead
+ *         return Main.wm.handleWorkspaceScroll(event);
+ *     }
+ *
+ * `ScrollGesture.canHandleEvent` requires a FINGER scroll source or a touchpad
+ * device, so a mouse wheel never takes the first branch and dies on the second.
+ * Two fingers do take the first branch and arrive as a normal gesture.
+ *
+ * The override handles the wheel itself and leaves finger scrolling to the
+ * tracker, which is where it belongs — one keeps its discrete step, the other
+ * keeps following your fingers.
  */
 
+import Clutter from 'gi://Clutter';
+import Meta from 'gi://Meta';
+import Mtk from 'gi://Mtk';
+import Shell from 'gi://Shell';
+
 import { InjectionManager } from 'resource:///org/gnome/shell/extensions/extension.js';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as SwipeTracker from 'resource:///org/gnome/shell/ui/swipeTracker.js';
 import { Workspace } from 'resource:///org/gnome/shell/ui/workspace.js';
+import {
+    SecondaryMonitorDisplay,
+    WorkspacesDisplay,
+} from 'resource:///org/gnome/shell/ui/workspacesView.js';
 
 import { isHiddenByUs } from './visibility.js';
+import { VirtualWorkspacesView, tagFor } from './workspacesView.js';
+
+/** Named so the replacement action can be lifted off the group on unload. */
+const TRACKER_NAME = 'dani-workspaces overview swipe tracker';
 
 let injector = null;
 
-export function patch() {
+/** The view that owns the gesture in flight, if any. */
+let gestureView = null;
+
+/** Set while the overview's swipe tracker is ours. */
+let gestureDisplay = null;
+let shellTracker = null;
+let ourTracker = null;
+
+/**
+ * @param {object} opts
+ * @param {(monitorIndex: number) => (object|null)} opts.getState MonitorState
+ *   for a monitor, or null for the primary and anything unmanaged
+ * @param {(state: object, index: number) => void} opts.onActivate commit a
+ *   switch chosen from inside the overview
+ * @param {(message: string) => void} opts.log honours debug-logging
+ */
+export function patch({ getState, onActivate, log }) {
+    injector = new InjectionManager();
+
+    patchWindowFilter();
+    patchSecondaryView(getState, onActivate);
+    takeOverGesture(getState, log);
+    patchScroll(getState, log);
+}
+
+export function unpatch() {
+    restoreGesture();
+
+    injector?.clear();
+    injector = null;
+    gestureView = null;
+}
+
+function patchWindowFilter() {
     const proto = Workspace?.prototype;
 
     // Degrade to "the overview shows everything", never to a broken shell.
@@ -38,18 +127,252 @@ export function patch() {
         return;
     }
 
-    injector = new InjectionManager();
-    injector.overrideMethod(proto, '_isOverviewWindow', originalMethod => {
-        return function (window) {
+    injector.overrideMethod(proto, '_isOverviewWindow',
+        originalMethod => function (window) {
+            const virtual = tagFor(this);
+
+            if (virtual) {
+                // Untracked windows belong nowhere in the model, and belonging
+                // nowhere would mean appearing on no page at all. They show up
+                // with the active workspace, which is where they are on screen.
+                const index = virtual.state.indexOf(window);
+                const page = index === -1 ? virtual.state.activeIndex : index;
+
+                return page === virtual.index &&
+                    originalMethod.call(this, window);
+            }
+
             if (isHiddenByUs(window))
                 return false;
 
             return originalMethod.call(this, window);
-        };
-    });
+        });
 }
 
-export function unpatch() {
-    injector?.clear();
-    injector = null;
+function patchSecondaryView(getState, onActivate) {
+    const proto = SecondaryMonitorDisplay?.prototype;
+
+    if (!proto || typeof proto._updateWorkspacesView !== 'function') {
+        console.warn('dani-workspaces: SecondaryMonitorDisplay._updateWorkspacesView ' +
+            'not found — the overview will show one workspace per secondary monitor');
+        return;
+    }
+
+    injector.overrideMethod(proto, '_updateWorkspacesView',
+        originalMethod => function () {
+            const state = getState(this._monitorIndex);
+
+            // Meta's public accessor rather than the display's own _settings:
+            // one less private field to be wrong about.
+            if (!state || state.size < 2 ||
+                !Meta.prefs_get_workspaces_only_on_primary()) {
+                originalMethod.call(this);
+                return;
+            }
+
+            this._workspacesView?.destroy();
+            this._workspacesView = new VirtualWorkspacesView(
+                this._monitorIndex,
+                this._overviewAdjustment,
+                state,
+                index => onActivate(state, index));
+
+            this.add_child(this._workspacesView);
+        });
+}
+
+/**
+ * Replace the overview's swipe tracker with one whose handlers are ours.
+ *
+ * Overriding `_switchWorkspaceBegin` does not work, and the failure is silent.
+ * `WorkspacesDisplay._init` connects with
+ *
+ *     this._swipeTracker.connect('begin', this._switchWorkspaceBegin.bind(this));
+ *
+ * and `.bind()` captures the function object at construction time — shell
+ * startup, long before an extension is enabled. The override installs, reports
+ * success, and is never reached, because the handler still points at the
+ * original. slide.js hit the identical trap outside the overview.
+ *
+ * Disabling the shell's tracker is what frees the events: a disabled tracker's
+ * gestures return EVENT_PROPAGATE rather than swallowing them with EVENT_STOP.
+ * The replacement goes on `display._swipeTracker`, where the shell's own
+ * `_updateSwipeTracker` and `_updateTrackerOrientation` keep managing it.
+ */
+function takeOverGesture(getState, log) {
+    // Two private hops. `controls` is a public getter — the shell reaches
+    // through it the same way in overview.js — but the display beyond it is not.
+    const display = Main.overview?._overview?.controls?._workspacesDisplay;
+
+    if (!display?._swipeTracker) {
+        console.warn('dani-workspaces: overview swipe tracker not found — ' +
+            'the overview gesture will not work on secondary monitors');
+        return;
+    }
+
+    shellTracker = display._swipeTracker;
+    shellTracker.enabled = false;
+
+    const tracker = new SwipeTracker.SwipeTracker(
+        Main.layoutManager.overviewGroup,
+        Clutter.Orientation.HORIZONTAL,
+        Shell.ActionMode.OVERVIEW,
+        {
+            allowDrag: false,
+            name: TRACKER_NAME,
+        });
+    tracker.allowLongSwipes = true;
+
+    tracker.connect('begin', (t, monitorIndex) => {
+        gestureView = null;
+
+        const view = viewFor(display, monitorIndex, getState);
+
+        // Both touchpad paths land here — a three-finger swipe, and a
+        // two-finger scroll the tracker adopted from a scroll event.
+        log(`overview gesture begin on monitor ${monitorIndex}: ` +
+            `${view ? 'ours' : 'passing to the shell'}`);
+
+        if (!view) {
+            display._switchWorkspaceBegin(t, monitorIndex);
+            return;
+        }
+
+        const adjustment = view.scrollAdjustment;
+        adjustment.remove_transition('value');
+
+        t.orientation = global.workspace_manager.layout_rows === -1
+            ? Clutter.Orientation.VERTICAL
+            : Clutter.Orientation.HORIZONTAL;
+
+        const distance = t.orientation === Clutter.Orientation.VERTICAL
+            ? view.height : view.width;
+
+        const points = Array.from({ length: view.pageCount }, (_v, i) => i);
+        const progress = adjustment.value;
+
+        t.confirmSwipe(distance, points, progress, Math.round(progress));
+
+        gestureView = view;
+    });
+
+    tracker.connect('update', (t, progress) => {
+        if (!gestureView) {
+            display._switchWorkspaceUpdate(t, progress);
+            return;
+        }
+
+        gestureView.scrollAdjustment.value = progress;
+    });
+
+    tracker.connect('end', (t, duration, endProgress) => {
+        const view = gestureView;
+        if (!view) {
+            display._switchWorkspaceEnd(t, duration, endProgress);
+            return;
+        }
+
+        gestureView = null;
+
+        view.scrollAdjustment.ease(endProgress, {
+            mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
+            duration,
+            onComplete: () => view.activate(Math.round(endProgress)),
+        });
+    });
+
+    ourTracker = tracker;
+    gestureDisplay = display;
+    display._swipeTracker = tracker;
+}
+
+function restoreGesture() {
+    if (!gestureDisplay)
+        return;
+
+    gestureDisplay._swipeTracker = shellTracker;
+    shellTracker.enabled = true;
+
+    ourTracker.enabled = false;
+    Main.layoutManager.overviewGroup.remove_action_by_name(TRACKER_NAME);
+
+    gestureDisplay = null;
+    shellTracker = null;
+    ourTracker = null;
+}
+
+function patchScroll(getState, log) {
+    const proto = WorkspacesDisplay?.prototype;
+
+    if (!proto || typeof proto._onScrollEvent !== 'function') {
+        console.warn('dani-workspaces: WorkspacesDisplay._onScrollEvent not found — ' +
+            'scrolling will not switch workspaces on secondary monitors');
+        return;
+    }
+
+    injector.overrideMethod(proto, '_onScrollEvent',
+        originalMethod => function (actor, event) {
+            const view = viewFor(this, monitorIndexOf(event), getState);
+            if (!view)
+                return originalMethod.call(this, actor, event);
+
+            // Finger scrolling belongs to the swipe tracker, which drives the
+            // same adjustment continuously. Stepping it here as well would
+            // fight the gesture for the same value.
+            if (this._swipeTracker?.canHandleScrollEvent(event))
+                return Clutter.EVENT_PROPAGATE;
+
+            const delta = scrollDelta(event);
+            if (delta === 0)
+                return Clutter.EVENT_PROPAGATE;
+
+            const from = Math.round(view.scrollAdjustment.value);
+            const to = Math.min(Math.max(from + delta, 0), view.pageCount - 1);
+
+            log(`overview scroll on monitor ${monitorIndexOf(event)}: ` +
+                `${from} -> ${to}`);
+
+            if (to !== from)
+                view.activate(to);
+
+            return Clutter.EVENT_STOP;
+        });
+}
+
+/** -1, 1 or 0 for anything that is not a discrete step. */
+function scrollDelta(event) {
+    switch (event.get_scroll_direction()) {
+    case Clutter.ScrollDirection.UP:
+    case Clutter.ScrollDirection.LEFT:
+        return -1;
+    case Clutter.ScrollDirection.DOWN:
+    case Clutter.ScrollDirection.RIGHT:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/** Same computation as WorkspacesDisplay._getMonitorIndexForEvent, in public API. */
+function monitorIndexOf(event) {
+    const [x, y] = event.get_coords();
+    const rect = new Mtk.Rectangle({ x, y, width: 1, height: 1 });
+
+    return global.display.get_monitor_index_for_rect(rect);
+}
+
+/**
+ * The view a gesture beginning on this monitor should drive, or null when the
+ * shell should keep it.
+ */
+function viewFor(display, monitorIndex, getState) {
+    if (monitorIndex === Main.layoutManager.primaryIndex)
+        return null;
+
+    if (!getState(monitorIndex))
+        return null;
+
+    const view = display._workspacesViews?.[monitorIndex]?._workspacesView;
+
+    return view instanceof VirtualWorkspacesView ? view : null;
 }
