@@ -358,6 +358,18 @@ export class Registry {
         return this._states.get(connector) ?? null;
     }
 
+    /**
+     * Drop a window from every state. For a window that is going away.
+     *
+     * Bookkeeping only — no un-hiding, because there is nothing left to show.
+     * Total on purpose: a dying window's monitor is not worth asking about, and
+     * a group left holding one would minimize() it on the next reapply().
+     */
+    untrackEverywhere(window) {
+        for (const state of this._states.values())
+            state.untrack(window);
+    }
+
     /** Create state for a connector that is not currently attached. */
     ensureConnector(connector) {
         if (!this._states.has(connector))

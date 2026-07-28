@@ -547,6 +547,31 @@ export class SlideController {
         this._teardown(session);
     }
 
+    /**
+     * Drop a slide in flight, from outside.
+     *
+     * Two callers, both cases where the slide has stopped meaning anything and
+     * nothing will tell it so:
+     *
+     *   a monitor layout change — the cover is pinned to a monitor index and
+     *   its pages hold background managers for it, and neither survives a
+     *   display arriving or leaving. Worse, once the state is detached
+     *   _settle() finds indexOf() === -1 for every revealed window and hides
+     *   the lot, tagged, with no group left to restore them from.
+     *
+     *   the screen locking — the shell's modal grab moves Main.actionMode to
+     *   LOCK_SCREEN, and SwipeTracker drops events that do not match its
+     *   allowed modes *before* it emits 'end'. The gesture never finishes, so
+     *   _session stays set, sliding is dead for the rest of the session, the
+     *   cover stays on the stage and disable_unredirect() is never balanced.
+     *
+     * Must be called while the state still holds its groups — before
+     * pruneDetached(), not after.
+     */
+    cancel() {
+        this._cancel();
+    }
+
     /** Drop the cover without committing. Leaves the screen as it was. */
     _cancel() {
         const session = this._session;

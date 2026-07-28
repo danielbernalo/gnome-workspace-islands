@@ -10,11 +10,13 @@
  */
 
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { Extension, gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
 
 import { Registry } from './monitorState.js';
+import { placementConnector } from './placement.js';
 import { Keybindings } from './keybindings.js';
 import { Persistence } from './persistence.js';
 import { Indicator } from './indicator.js';
@@ -27,6 +29,24 @@ import * as OverviewFilter from './overview.js';
 const MUTTER_SCHEMA = 'org.gnome.mutter';
 const ONLY_ON_PRIMARY = 'workspaces-only-on-primary';
 const PAPERWM_UUID = 'paperwm@paperwm.github.com';
+
+/**
+ * How long to wait for the monitor layout to stop moving.
+ *
+ * `monitors-changed` is not one event. A resume or a DP-MST dock emits it two
+ * or three times within a few tens of milliseconds, and at least one of those
+ * reports a layout that never really existed — zero monitors, or only the
+ * built-in panel. Acting on the first fire re-adopts every window against a
+ * layout that is about to be replaced.
+ *
+ * The timer is rescheduled on every fire, so this is the quiet period after the
+ * last change rather than a fixed cost. An idle would not do: the fires arrive
+ * across separate main loop iterations, so an idle lands in the middle of one.
+ *
+ * Only the re-adoption waits. Releasing the windows of a monitor that just went
+ * away happens immediately — see the handler.
+ */
+const SETTLE_DELAY_MS = 300;
 
 export default class WorkspaceIslands extends Extension {
     enable() {
@@ -43,6 +63,8 @@ export default class WorkspaceIslands extends Extension {
 
         this._windowSignals = new Map();
         this._signals = [];
+        this._settleId = 0;
+        this._layoutChanging = false;
         this._keys = new Keybindings(this._settings);
 
         this._checkPreconditions();
@@ -104,6 +126,16 @@ export default class WorkspaceIslands extends Extension {
     disable() {
         AltTabFilter.unpatch();
         OverviewFilter.unpatch();
+
+        // Before the registry goes: a settle firing into a half-dismantled
+        // extension has nothing left to settle against. Nothing is left
+        // half-done by dropping it — the synchronous half of the handler has
+        // already released every window the detach touched, and restoreAll()
+        // below covers the rest.
+        if (this._settleId) {
+            GLib.Source.remove(this._settleId);
+            this._settleId = 0;
+        }
 
         // Flush before tearing anything down, or the last couple of seconds of
         // changes are lost on every logout.
@@ -197,28 +229,67 @@ export default class WorkspaceIslands extends Extension {
 
         // A window dragged onto another monitor belongs to that monitor's
         // active virtual workspace from then on — never to whatever workspace
-        // it sat on the last time it was here. A drag is a statement about now.
+        // it sat on the last time it was here. A drag is a statement about now,
+        // and honouring an old note would make the window the user is holding
+        // vanish onto a workspace they are not looking at.
+        //
+        // The same signal carries Mutter putting windows back after a hotplug,
+        // which is the exact opposite: nobody stated anything, and the note is
+        // the only record of where these windows were. Hence the flag.
         this._connect(global.display, 'window-entered-monitor', (_d, _index, window) => {
-            this._trackWindow(window, { trustPlacement: false });
+            this._trackWindow(window, { trustPlacement: this._layoutSettling });
         });
 
+        // Untracked by the note, not by forWindow(). Two reasons, and both bite:
+        // forWindow() resolves from window.get_monitor(), which by the time
+        // this fires is the monitor the window has already *arrived at* — so
+        // the monitor it left keeps it forever and minimizes it on its next
+        // switch, a window on the other screen vanishing for no reason. The
+        // index the signal hands over is no better: during a hotplug this whole
+        // burst comes out of Mutter's own monitors-changed handling, before
+        // LayoutManager has refreshed the list an index would be resolved
+        // against. The note was written while the layout was still true, and it
+        // names a connector rather than a position.
         this._connect(global.display, 'window-left-monitor', (_d, _index, window) => {
-            this._registry.forWindow(window)?.untrack(window);
+            const connector = placementConnector(window);
+            if (connector)
+                this._registry.forConnector(connector)?.untrack(window);
+        });
+
+        // Mutter announces a layout change before it applies one, and it moves
+        // windows between displays before LayoutManager re-emits below. That
+        // gap is the only window in which a relocation is indistinguishable
+        // from a drag, so the flag has to be raised at the earliest possible
+        // moment rather than at the one that is convenient.
+        //
+        // A settle is scheduled here too, not only in the handler below. A
+        // configuration that is announced and then abandoned would otherwise
+        // leave the flag raised for good, and every later drag would silently
+        // start honouring old notes.
+        this._connect(global.backend.get_monitor_manager(), 'monitors-changing', () => {
+            this._layoutChanging = true;
+            this._scheduleSettle();
         });
 
         this._connect(Main.layoutManager, 'monitors-changed', () => {
+            // First, and unconditionally. A slide in flight is pinned to a
+            // monitor index and is holding windows un-minimized behind a cover;
+            // neither survives a display arriving or leaving, and it has to go
+            // while the state still holds the groups it will be settled against.
+            this._slide?.cancel();
+
             const live = this._registry.syncMonitors();
 
-            // Unplugged monitors first: their windows are already on another
-            // display and some are still minimized by us. Left alone they read
-            // as lost windows.
+            // Unplugged monitors next, and synchronously. Their windows are
+            // already on another display and some are still minimized by us —
+            // invisible on a monitor with no virtual workspaces to explain why.
+            // Nothing about that is deferrable: the whole point of waiting
+            // below is that we do not yet know what the layout is, and a window
+            // nobody can see is not something to be unsure about.
             this._registry.pruneDetached(live);
 
-            this._adoptExistingWindows();
-            for (const state of this._registry.states)
-                state.reapply();
-
-            this._afterChange(`monitors changed — ${live.size} secondary`);
+            // Everything else waits for the layout to stop moving.
+            this._scheduleSettle();
         });
 
         // The whole model collapses if this is flipped underneath us — and it
@@ -247,6 +318,60 @@ export default class WorkspaceIslands extends Extension {
         this._signals.push([object, object.connect(signal, callback)]);
     }
 
+    /**
+     * True from the first hint of a monitor change until the settle lands.
+     *
+     * The one thing that separates "Mutter is putting windows back" from "the
+     * user dragged this here", and the only reason a placement note can be
+     * trusted in one case and must be ignored in the other.
+     */
+    get _layoutSettling() {
+        return this._layoutChanging || this._settleId !== 0;
+    }
+
+    /** Restart the quiet period. See SETTLE_DELAY_MS. */
+    _scheduleSettle() {
+        if (this._settleId)
+            GLib.Source.remove(this._settleId);
+
+        this._settleId = GLib.timeout_add(
+            GLib.PRIORITY_DEFAULT, SETTLE_DELAY_MS, () => {
+                this._settleId = 0;
+                this._settleLayout();
+                return GLib.SOURCE_REMOVE;
+            });
+
+        GLib.Source.set_name_by_id(this._settleId, '[workspace-islands] monitor settle');
+    }
+
+    /**
+     * Re-adopt against the layout that turned out to be real.
+     *
+     * Every window here goes through track(), which reads its note first, so
+     * running this against a layout that is still moving costs nothing but a
+     * repeat — the answer converges on the same arrangement either way. That is
+     * what makes the delay above a coalescing optimisation rather than a race
+     * being papered over.
+     */
+    _settleLayout() {
+        // disable() removes the source before tearing the registry down, so
+        // this should be unreachable — but a GLib callback firing into a
+        // half-dismantled extension is the kind of thing that is worth one line
+        // to make impossible rather than unlikely.
+        if (!this._registry)
+            return;
+
+        this._layoutChanging = false;
+
+        const live = this._registry.syncMonitors();
+
+        this._adoptExistingWindows();
+        for (const state of this._registry.states)
+            state.reapply();
+
+        this._afterChange(`monitors settled — ${live.size} secondary`);
+    }
+
     _trackWindow(window, { trustPlacement = true } = {}) {
         const state = this._registry.forWindow(window);
         if (!state)
@@ -260,7 +385,11 @@ export default class WorkspaceIslands extends Extension {
 
         const ids = [
             window.connect('unmanaged', () => {
-                this._registry?.forWindow(window)?.untrack(window);
+                // Everywhere, not forWindow(): a window being unmanaged has no
+                // monitor worth asking about, and it belongs nowhere now. A
+                // group left holding a dead window would minimize() it on the
+                // next reapply().
+                this._registry?.untrackEverywhere(window);
                 this._disconnectWindow(window);
                 this._indicator?.sync();
             }),
