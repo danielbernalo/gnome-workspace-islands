@@ -20,6 +20,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import { hide, show, isHiddenByUs } from './visibility.js';
 import { appKeyOf } from './persistence.js';
+import { stamp, placementIndex } from './placement.js';
 
 export class MonitorState {
     constructor(connector, size) {
@@ -61,6 +62,27 @@ export class MonitorState {
         return clamp(this._appRules.get(key), 0, this.size - 1);
     }
 
+    /** Where this exact window was on this monitor, or -1 if we have no note. */
+    indexForPlacement(window) {
+        const index = placementIndex(window, this.connector);
+
+        // Clamped like indexForApp, and for a sharper reason: a note can
+        // outlive a shrink of `virtual-workspaces`, because resize() can only
+        // reach windows that are in a group at the time.
+        return index < 0 ? -1 : clamp(index, 0, this.size - 1);
+    }
+
+    /**
+     * The one way into a group: membership and note are written together.
+     *
+     * Private so that "a window in a group carries a current note" is an
+     * invariant rather than a habit. detach() depends on it — see there.
+     */
+    _place(window, index) {
+        this._groups[index].add(window);
+        stamp(window, this.connector, index);
+    }
+
     get size() {
         return this._groups.length;
     }
@@ -85,24 +107,47 @@ export class MonitorState {
     /**
      * Assign a window to a virtual workspace.
      *
-     * With no explicit index, an app rule decides; failing that, the active
-     * workspace. A window that lands somewhere other than the active workspace
-     * is hidden immediately — otherwise it appears on screen for a moment and
-     * then vanishes, which reads as a bug.
+     * Four answers, in descending order of how much they actually know:
      *
+     *   explicit index   a drop or a move. The user just said where.
+     *   placement note   this exact window was on workspace N of this exact
+     *                    monitor, and something churned in between — a lock
+     *                    screen, an unplug, a resume. Not a guess: a record.
+     *   app rule         a window we have never seen, of an app we have. A
+     *                    guess, and a good one.
+     *   active index     nothing is known. Put it where the user is looking.
+     *
+     * The note outranks the rule because they answer different questions. The
+     * rule says "windows of this app usually live on 3"; the note says "this
+     * window was on 2, four hundred milliseconds ago". A resume that consulted
+     * the rule first collapses every window of an app into one workspace, which
+     * is the entire bug this ordering exists to prevent.
+     *
+     * A window that lands somewhere other than the active workspace is hidden
+     * immediately — otherwise it appears on screen for a moment and then
+     * vanishes, which reads as a bug.
+     *
+     * @param {object} [options]
+     * @param {boolean} [options.trustPlacement] consult the note. False for a
+     *   window the user just dragged here: a drag is a statement about *now*,
+     *   and honouring an old note would make the window they are holding
+     *   vanish onto some workspace they are not looking at. Every other caller
+     *   is recovering from churn, where the note is the whole point.
      * @returns {number} the index it was assigned to, or -1 if already tracked
      */
-    track(window, index = -1) {
+    track(window, index = -1, { trustPlacement = true } = {}) {
         if (this.indexOf(window) !== -1)
             return -1;
 
         let target = index;
         if (target < 0 || target >= this.size)
+            target = trustPlacement ? this.indexForPlacement(window) : -1;
+        if (target < 0)
             target = this.indexForApp(window);
         if (target < 0)
             target = this.activeIndex;
 
-        this._groups[target].add(window);
+        this._place(window, target);
 
         if (target !== this.activeIndex)
             hide(window);
@@ -144,7 +189,7 @@ export class MonitorState {
             return false;
 
         this._groups[from].delete(window);
-        this._groups[index].add(window);
+        this._place(window, index);
 
         // Moving a window by hand is the strongest signal we get about where
         // its application belongs, so it updates the rule.
@@ -207,10 +252,9 @@ export class MonitorState {
         // Shrinking: everything past the new end collapses into the last group
         // rather than vanishing along with its windows.
         const tail = this._groups.splice(size);
-        const last = this._groups[size - 1];
         for (const group of tail) {
             for (const window of group)
-                last.add(window);
+                this._place(window, size - 1);
         }
 
         if (this.activeIndex >= size)

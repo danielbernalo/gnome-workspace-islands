@@ -196,9 +196,10 @@ export default class WorkspaceIslands extends Extension {
         });
 
         // A window dragged onto another monitor belongs to that monitor's
-        // active virtual workspace from then on.
+        // active virtual workspace from then on — never to whatever workspace
+        // it sat on the last time it was here. A drag is a statement about now.
         this._connect(global.display, 'window-entered-monitor', (_d, _index, window) => {
-            this._trackWindow(window);
+            this._trackWindow(window, { trustPlacement: false });
         });
 
         this._connect(global.display, 'window-left-monitor', (_d, _index, window) => {
@@ -246,12 +247,12 @@ export default class WorkspaceIslands extends Extension {
         this._signals.push([object, object.connect(signal, callback)]);
     }
 
-    _trackWindow(window) {
+    _trackWindow(window, { trustPlacement = true } = {}) {
         const state = this._registry.forWindow(window);
         if (!state)
             return;
 
-        state.track(window);
+        state.track(window, -1, { trustPlacement });
         this._indicator?.sync();
 
         if (this._windowSignals.has(window))
