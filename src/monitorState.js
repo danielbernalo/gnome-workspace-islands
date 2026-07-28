@@ -456,6 +456,17 @@ export class Registry {
 }
 
 /**
+ * Index -> connector for the current layout, or null when it needs rereading.
+ *
+ * Cached because this is not a cold path: the indicator resolves the focused
+ * monitor on every frame of a swipe preview, and asking the backend to name
+ * every output sixty times a second to answer a question whose answer cannot
+ * change mid-gesture is work for nothing. {@link invalidateConnectors} is the
+ * other half — the layout is the only thing that can make this stale.
+ */
+let connectors = null;
+
+/**
  * The connector driving a monitor index — "HDMI-2", not "monitor-1".
  *
  * This module is keyed by connector precisely because indices are reshuffled on
@@ -472,6 +483,18 @@ export class Registry {
  * attached monitors gives exactly the mapping this module always assumed it had.
  */
 export function connectorOf(index) {
+    connectors ??= readConnectors();
+    return connectors[index] ?? `monitor-${index}`;
+}
+
+/** Drop the cache. Call whenever the monitor layout is about to change. */
+export function invalidateConnectors() {
+    connectors = null;
+}
+
+function readConnectors() {
+    const map = [];
+
     try {
         const manager = global.backend.get_monitor_manager();
 
@@ -480,8 +503,12 @@ export function connectorOf(index) {
                 continue;
 
             const connector = monitor.get_connector();
-            if (connector && manager.get_monitor_for_connector(connector) === index)
-                return connector;
+            if (!connector)
+                continue;
+
+            const index = manager.get_monitor_for_connector(connector);
+            if (index >= 0)
+                map[index] = connector;
         }
     } catch (e) {
         // A backend that cannot name its monitors is not a reason to stop
@@ -490,7 +517,7 @@ export function connectorOf(index) {
         console.warn(`workspace-islands: could not read monitor connectors: ${e}`);
     }
 
-    return `monitor-${index}`;
+    return map;
 }
 
 /**

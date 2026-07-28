@@ -15,7 +15,7 @@ import GLib from 'gi://GLib';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { Extension, gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
 
-import { Registry } from './monitorState.js';
+import { Registry, invalidateConnectors } from './monitorState.js';
 import { placementConnector } from './placement.js';
 import { Keybindings } from './keybindings.js';
 import { Persistence } from './persistence.js';
@@ -50,6 +50,12 @@ const SETTLE_DELAY_MS = 300;
 
 export default class WorkspaceIslands extends Extension {
     enable() {
+        // Module state outlives the extension object — GJS keeps the module
+        // loaded across a disable/enable cycle — and displays can come and go
+        // while this is off. The cache below is the one piece of that state
+        // that would be wrong rather than merely stale.
+        invalidateConnectors();
+
         this._settings = this.getSettings();
         this._mutterSettings = new Gio.Settings({ schema_id: MUTTER_SCHEMA });
 
@@ -277,11 +283,14 @@ export default class WorkspaceIslands extends Extension {
         // leave the flag raised for good, and every later drag would silently
         // start honouring old notes.
         this._connect(global.backend.get_monitor_manager(), 'monitors-changing', () => {
+            invalidateConnectors();
             this._layoutChanging = true;
             this._scheduleSettle();
         });
 
         this._connect(Main.layoutManager, 'monitors-changed', () => {
+            invalidateConnectors();
+
             // First, and unconditionally. A slide in flight is pinned to a
             // monitor index and is holding windows un-minimized behind a cover;
             // neither survives a display arriving or leaving, and it has to go
