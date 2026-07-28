@@ -167,6 +167,14 @@ export class SwitcherPopup {
         if (Main.overview.visible)
             return;
 
+        // Nothing this extension draws belongs on the lock screen — and this
+        // popup would land on top of it, because the shield is added as chrome
+        // while add_child() below simply appends. Reachable from there: a
+        // background app un-minimizing its own window makes the monitor follow
+        // it, and following is a switch like any other.
+        if (Main.sessionMode.isLocked)
+            return;
+
         const monitorIndex = monitorIndexOf(state.connector);
         if (monitorIndex < 0)
             return;

@@ -183,6 +183,16 @@ export default class WorkspaceIslands extends Extension {
      * its patches.js), say so loudly instead of misbehaving quietly.
      */
     _checkPreconditions() {
+        // enable() is no longer a once-per-session event. The shell rebases the
+        // extension order whenever it disables one, so locking the screen tears
+        // this extension down and builds it back up once for every user-only
+        // extension ahead of it in the list — and it does that while locked,
+        // now that unlock-dialog is declared. Unguarded, a misconfiguration
+        // would queue half a dozen identical notifications at every lock, all
+        // of which arrive at once when the user comes back.
+        if (Main.sessionMode.isLocked)
+            return;
+
         if (!this._mutterSettings.get_boolean(ONLY_ON_PRIMARY)) {
             Main.notifyError(
                 'Workspace Islands',

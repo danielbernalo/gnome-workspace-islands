@@ -320,9 +320,22 @@ export class SlideController {
         // The overview owns the whole screen while it is up, secondary
         // monitors included. The shell already disables its tracker there, so
         // the gesture stops on its own; only a running slide needs dropping.
+        //
+        // The lock screen is the same shape of problem with a worse ending. The
+        // shield takes a modal grab, Main.actionMode becomes LOCK_SCREEN, and
+        // SwipeTracker drops events that do not match its allowed modes before
+        // it ever emits 'end'. Nothing finishes the gesture: _session stays
+        // set, so sliding is dead for the rest of the session, the cover stays
+        // on the stage, and disable_unredirect() is never balanced. Until this
+        // extension declared unlock-dialog, being disabled on lock hid that.
         this._signals = [
             [Main.overview, Main.overview.connect('showing',
                 () => this._cancel())],
+            [Main.sessionMode, Main.sessionMode.connect('updated',
+                () => {
+                    if (Main.sessionMode.isLocked)
+                        this._cancel();
+                })],
         ];
 
         this._takeOverTracker();

@@ -5,6 +5,10 @@
   "shell-version": [
     "50"
   ],
+  "session-modes": [
+    "user",
+    "unlock-dialog"
+  ],
   "version-name": "0.1.0",
   "settings-schema": "org.gnome.shell.extensions.workspace-islands",
   "gettext-domain": "workspace-islands",

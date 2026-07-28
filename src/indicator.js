@@ -266,8 +266,12 @@ export class Indicator {
         this._connect(this._nativeAdjustment, 'notify::upper', () => this.sync());
         this._connect(global.display, 'notify::focus-window', () => this.sync());
 
-        // The panel is rebuilt on session mode changes, which takes our child
-        // with it and brings the shell's back. Re-attaching is idempotent.
+        // A session mode change can take our child out of the panel and bring
+        // the shell's back. In GNOME 50 it usually does not — _updatePanel only
+        // hides cached indicators and reuses them, so a lock leaves our dots
+        // parented and _attach() finds nothing to do. The listener stays
+        // because re-attaching is idempotent and cheap, and because "usually
+        // not" is a promise about an implementation detail, not an API.
         this._connect(Main.sessionMode, 'updated', () => this._attach());
 
         this._attach();
