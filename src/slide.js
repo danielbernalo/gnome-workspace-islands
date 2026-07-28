@@ -106,7 +106,7 @@ import {
     WORKSPACE_SPACING,
 } from 'resource:///org/gnome/shell/ui/workspaceAnimation.js';
 
-import { connectorOf } from './monitorState.js';
+import { monitorIndexOf } from './monitorState.js';
 import { hide, reveal } from './visibility.js';
 
 /** Identifies the replacement action on the stage; SwipeTracker uses it too. */
@@ -320,9 +320,22 @@ export class SlideController {
         // The overview owns the whole screen while it is up, secondary
         // monitors included. The shell already disables its tracker there, so
         // the gesture stops on its own; only a running slide needs dropping.
+        //
+        // The lock screen is the same shape of problem with a worse ending. The
+        // shield takes a modal grab, Main.actionMode becomes LOCK_SCREEN, and
+        // SwipeTracker drops events that do not match its allowed modes before
+        // it ever emits 'end'. Nothing finishes the gesture: _session stays
+        // set, so sliding is dead for the rest of the session, the cover stays
+        // on the stage, and disable_unredirect() is never balanced. Until this
+        // extension declared unlock-dialog, being disabled on lock hid that.
         this._signals = [
             [Main.overview, Main.overview.connect('showing',
                 () => this._cancel())],
+            [Main.sessionMode, Main.sessionMode.connect('updated',
+                () => {
+                    if (Main.sessionMode.isLocked)
+                        this._cancel();
+                })],
         ];
 
         this._takeOverTracker();
@@ -547,6 +560,31 @@ export class SlideController {
         this._teardown(session);
     }
 
+    /**
+     * Drop a slide in flight, from outside.
+     *
+     * Two callers, both cases where the slide has stopped meaning anything and
+     * nothing will tell it so:
+     *
+     *   a monitor layout change — the cover is pinned to a monitor index and
+     *   its pages hold background managers for it, and neither survives a
+     *   display arriving or leaving. Worse, once the state is detached
+     *   _settle() finds indexOf() === -1 for every revealed window and hides
+     *   the lot, tagged, with no group left to restore them from.
+     *
+     *   the screen locking — the shell's modal grab moves Main.actionMode to
+     *   LOCK_SCREEN, and SwipeTracker drops events that do not match its
+     *   allowed modes *before* it emits 'end'. The gesture never finishes, so
+     *   _session stays set, sliding is dead for the rest of the session, the
+     *   cover stays on the stage and disable_unredirect() is never balanced.
+     *
+     * Must be called while the state still holds its groups — before
+     * pruneDetached(), not after.
+     */
+    cancel() {
+        this._cancel();
+    }
+
     /** Drop the cover without committing. Leaves the screen as it was. */
     _cancel() {
         const session = this._session;
@@ -683,9 +721,4 @@ function previewIndex(slide, progress) {
     const to = indices[clamp(Math.ceil(progress))];
 
     return from + (to - from) * (progress - lower);
-}
-
-function monitorIndexOf(connector) {
-    return Main.layoutManager.monitors.findIndex(
-        (monitor, index) => connectorOf(monitor, index) === connector);
 }

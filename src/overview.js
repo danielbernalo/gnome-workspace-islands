@@ -71,13 +71,14 @@ import { InjectionManager } from 'resource:///org/gnome/shell/extensions/extensi
 import * as DND from 'resource:///org/gnome/shell/ui/dnd.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as SwipeTracker from 'resource:///org/gnome/shell/ui/swipeTracker.js';
-import { Workspace } from 'resource:///org/gnome/shell/ui/workspace.js';
+import { Workspace, WorkspaceBackground } from 'resource:///org/gnome/shell/ui/workspace.js';
 import {
     SecondaryMonitorDisplay,
     WorkspacesDisplay,
 } from 'resource:///org/gnome/shell/ui/workspacesView.js';
 
 import { isHiddenByUs } from './visibility.js';
+import { scrollDelta } from './scroll.js';
 import { VirtualWorkspacesView, tagFor } from './workspacesView.js';
 
 /** Identifies the replacement action on the group; SwipeTracker uses it too. */
@@ -107,6 +108,7 @@ export function patch({ getState, onActivate, onDrop, log }) {
 
     patchWindowFilter();
     patchDropTarget();
+    patchOrphanedBackground();
     patchSecondaryView(getState, onActivate, onDrop);
     takeOverGesture(getState, log);
     patchScroll(getState, log);
@@ -235,6 +237,47 @@ function patchDropTarget() {
             // page carries that this module put there.
             virtual.onDrop?.(virtual.index, source.metaWindow, this.monitorIndex);
             return true;
+        });
+}
+
+/**
+ * Stop a background from reading the geometry of a monitor that just left.
+ *
+ * `WorkspaceBackground` keeps a monitor index and connects `workareas-changed`
+ * to recompute its rounded clip against `Main.layoutManager.monitors[index]`.
+ * Unplug that monitor and the signal arrives while the index is already past
+ * the end of the list, so the handler dereferences `undefined` and throws
+ * before anything gets round to destroying the view.
+ *
+ * This is the shell's own code and the shell's own bug — its single
+ * `ExtraWorkspaceView` per secondary monitor hits it too, once, which is quiet
+ * enough that nobody has chased it. What makes it worth patching from here is
+ * that this extension gives a secondary monitor one page per virtual
+ * workspace, so the same unplug throws once per page: four JS errors and a
+ * wall of allocation warnings on every dock, all of them pointing at shell
+ * files and none of them mentioning this extension. A future maintainer
+ * reading that journal would have no reason to suspect us and every reason to
+ * lose an evening.
+ *
+ * Returning early is the whole fix. The view is about to be rebuilt against
+ * the new layout, so there is no clip worth computing and nothing downstream
+ * of it that survives.
+ */
+function patchOrphanedBackground() {
+    const proto = WorkspaceBackground?.prototype;
+
+    if (!proto || typeof proto._updateRoundedClipBounds !== 'function') {
+        console.warn('workspace-islands: WorkspaceBackground._updateRoundedClipBounds ' +
+            'not found — unplugging a monitor will log harmless JS errors');
+        return;
+    }
+
+    injector.overrideMethod(proto, '_updateRoundedClipBounds',
+        originalMethod => function () {
+            if (!Main.layoutManager.monitors[this._monitorIndex])
+                return;
+
+            originalMethod.call(this);
         });
 }
 
@@ -432,18 +475,6 @@ function patchScroll(getState, log) {
 }
 
 /** -1, 1 or 0 for anything that is not a discrete step. */
-function scrollDelta(event) {
-    switch (event.get_scroll_direction()) {
-    case Clutter.ScrollDirection.UP:
-    case Clutter.ScrollDirection.LEFT:
-        return -1;
-    case Clutter.ScrollDirection.DOWN:
-    case Clutter.ScrollDirection.RIGHT:
-        return 1;
-    default:
-        return 0;
-    }
-}
 
 /** Same computation as WorkspacesDisplay._getMonitorIndexForEvent, in public API. */
 function monitorIndexOf(event) {

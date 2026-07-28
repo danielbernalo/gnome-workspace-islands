@@ -42,7 +42,7 @@ import * as Layout from 'resource:///org/gnome/shell/ui/layout.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { ANIMATION_TIME } from 'resource:///org/gnome/shell/ui/workspaceSwitcherPopup.js';
 
-import { connectorOf } from './monitorState.js';
+import { monitorIndexOf } from './monitorState.js';
 
 /** How long the pill stays up. The shell keeps its copy private, so: duplicated. */
 const DISPLAY_TIMEOUT = 600;
@@ -167,6 +167,14 @@ export class SwitcherPopup {
         if (Main.overview.visible)
             return;
 
+        // Nothing this extension draws belongs on the lock screen — and this
+        // popup would land on top of it, because the shield is added as chrome
+        // while add_child() below simply appends. Reachable from there: a
+        // background app un-minimizing its own window makes the monitor follow
+        // it, and following is a switch like any other.
+        if (Main.sessionMode.isLocked)
+            return;
+
         const monitorIndex = monitorIndexOf(state.connector);
         if (monitorIndex < 0)
             return;
@@ -197,10 +205,4 @@ export class SwitcherPopup {
 
         this._popups.clear();
     }
-}
-
-/** Current index for a connector, or -1 if that monitor is not attached. */
-function monitorIndexOf(connector) {
-    return Main.layoutManager.monitors.findIndex(
-        (monitor, index) => connectorOf(monitor, index) === connector);
 }

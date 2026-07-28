@@ -4,9 +4,17 @@
  * A hard limit shapes this module: **windows have no stable identity across
  * sessions**. A MetaWindow is a live object; nothing about it survives a
  * logout, and no id can be trusted to mean the same window tomorrow. So
- * "restore this window to virtual workspace 2" is not implementable.
+ * "restore this window to virtual workspace 2" is not implementable *here*.
  *
- * What is implementable, and what people actually mean when they ask for it:
+ * Note the emphasis on *across sessions*. Almost nothing that loses an
+ * arrangement is a new session — a lock, a suspend, a monitor unplugged over
+ * lunch all happen inside one, where the MetaWindow objects are the same
+ * objects and the exact mapping is recoverable. That case is not this module's
+ * to solve and it is not lost; see placement.js, which puts the record on the
+ * window instead of in gsettings precisely because it must not outlive it.
+ *
+ * What is implementable here, and what people actually mean when they ask for
+ * a setup that survives a logout:
  *
  *   activeIndex   which virtual workspace each monitor was left on. Restoring
  *                 this is what makes the setup feel like it stayed put.

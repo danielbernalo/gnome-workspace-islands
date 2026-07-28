@@ -103,6 +103,7 @@ All of them are rebindable in preferences.
 | Three-finger swipe ← / → | In the overview | Same, on the monitor under the pointer |
 | Two-finger scroll | In the overview | Switch workspace |
 | Mouse wheel | In the overview | Switch workspace |
+| `Super` + mouse wheel | On a secondary monitor | Switch workspace, one notch at a time |
 
 Over the primary monitor every gesture stays GNOME's own, untouched.
 
@@ -162,11 +163,17 @@ journalctl -f -o cat /usr/bin/gnome-shell | grep workspace-islands
 
 The **Diagnostics** section of the same page shows the live state of `workspaces-only-on-primary` and offers a button to turn it back on. It is there because that setting is the one thing other software flips underneath you, and when it is off nothing works and the reason is invisible.
 
+## What survives a lock, an unplug or a suspend
+
+**Everything.** Each window carries a note saying which monitor and which workspace it was on, and the note lives on the window itself — so it outlasts the screen locking, the monitors going away and coming back, and the extension being turned off and on again. Come back from lunch to a redocked laptop and every window is on the workspace you left it on.
+
+This is the common case, and it is worth being precise about why it works: none of those events ends the session. The windows are the same windows the whole time, so the arrangement was never really lost — it was being thrown away and guessed back.
+
 ## What survives a logout
 
-Windows have **no stable identity across sessions** — a window is a live object, and no id outlives a logout. So "put this exact window back on workspace 2" is not implementable by anyone. What is stored instead:
+A logout is the one that genuinely cannot be complete. Windows have **no stable identity across sessions** — a window is a live object, and no id outlives a logout. So "put this exact window back on workspace 2" is not implementable by anyone. What is stored instead:
 
-- **Which workspace each monitor was left on**, keyed by the physical connector, so unplugging a display and plugging it back in returns it to the arrangement you left.
+- **Which workspace each monitor was left on**, keyed by the physical connector — the name the backend gives the output, like `HDMI-2` — so a display that comes back returns to its own arrangement no matter which position it comes back in.
 - **Where each application belongs.** New windows of an app land where you last put that app. A deliberate heuristic: two windows of the same app go to the same place, which is usually right and always correctable by moving the window.
 
 ## Troubleshooting
@@ -378,6 +385,14 @@ themselves.
 The key is a namespaced symbol, `Symbol.for('workspace-islands.hidden')`, so it
 cannot collide with a plain property or with another extension's. It is removed
 when the window is restored, and `disable()` restores every window it set it on.
+
+There is a second one, `Symbol.for('workspace-islands.placement')`, holding which
+monitor and workspace the window was on. It is there for the opposite reason: it
+*has* to outlive the extension. The shell tears extensions down and builds them
+back up more often than you would think — every screen lock does it — and the
+window is the only thing in reach that survives that. Unlike the first, it is
+never removed, because inert data under a private key has no consequence, and it
+dies with the window either way.
 
 ### Why is `version` missing from `metadata.json`?
 
