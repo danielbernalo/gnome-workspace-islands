@@ -78,6 +78,7 @@ import {
 } from 'resource:///org/gnome/shell/ui/workspacesView.js';
 
 import { isHiddenByUs } from './visibility.js';
+import { scrollDelta } from './scroll.js';
 import { VirtualWorkspacesView, tagFor } from './workspacesView.js';
 
 /** Identifies the replacement action on the group; SwipeTracker uses it too. */
@@ -474,18 +475,6 @@ function patchScroll(getState, log) {
 }
 
 /** -1, 1 or 0 for anything that is not a discrete step. */
-function scrollDelta(event) {
-    switch (event.get_scroll_direction()) {
-    case Clutter.ScrollDirection.UP:
-    case Clutter.ScrollDirection.LEFT:
-        return -1;
-    case Clutter.ScrollDirection.DOWN:
-    case Clutter.ScrollDirection.RIGHT:
-        return 1;
-    default:
-        return 0;
-    }
-}
 
 /** Same computation as WorkspacesDisplay._getMonitorIndexForEvent, in public API. */
 function monitorIndexOf(event) {

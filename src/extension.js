@@ -25,6 +25,7 @@ import { SlideController } from './slide.js';
 import { isApplying, isHiddenByUs, forget } from './visibility.js';
 import * as AltTabFilter from './altTab.js';
 import * as OverviewFilter from './overview.js';
+import * as ScrollFilter from './scroll.js';
 
 const MUTTER_SCHEMA = 'org.gnome.mutter';
 const ONLY_ON_PRIMARY = 'workspaces-only-on-primary';
@@ -106,6 +107,21 @@ export default class WorkspaceIslands extends Extension {
         });
 
         AltTabFilter.patch();
+
+        // Super + wheel on the desktop. The overview has its own scroll seam
+        // and already worked; this is the one outside it.
+        ScrollFilter.patch({
+            getState: () => this._registry?.forPointerMonitor() ?? null,
+
+            // Through _requestSwitch, so the wheel slides exactly like the
+            // shortcuts and the gesture do. The OSD is left to announce it, as
+            // it does on the primary monitor.
+            onScroll: (state, index, forward) =>
+                this._requestSwitch(state, index, forward),
+
+            log: message => this._log(message),
+        });
+
         OverviewFilter.patch({
             getState: index => this._registry?.forMonitorIndex(index) ?? null,
 
@@ -131,6 +147,7 @@ export default class WorkspaceIslands extends Extension {
 
     disable() {
         AltTabFilter.unpatch();
+        ScrollFilter.unpatch();
         OverviewFilter.unpatch();
 
         // Before the registry goes: a settle firing into a half-dismantled

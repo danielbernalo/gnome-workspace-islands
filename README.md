@@ -103,6 +103,7 @@ All of them are rebindable in preferences.
 | Three-finger swipe ← / → | In the overview | Same, on the monitor under the pointer |
 | Two-finger scroll | In the overview | Switch workspace |
 | Mouse wheel | In the overview | Switch workspace |
+| `Super` + mouse wheel | On a secondary monitor | Switch workspace, one notch at a time |
 
 Over the primary monitor every gesture stays GNOME's own, untouched.
 

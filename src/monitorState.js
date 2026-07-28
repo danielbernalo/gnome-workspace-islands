@@ -445,6 +445,19 @@ export class Registry {
         return this.forConnector(connectorOf(index));
     }
 
+    /**
+     * State for the monitor under the pointer, or null if that's primary.
+     *
+     * The deliberate opposite of {@link forFocusedMonitor}, and for the reason
+     * stated there in reverse: a shortcut is pressed with a hand on the
+     * keyboard, so the focused window decides. A wheel is turned with a hand on
+     * the mouse, so the pointer decides. Asking the focused window where a
+     * wheel notch belongs would scroll a screen the user is not pointing at.
+     */
+    forPointerMonitor() {
+        return this.forMonitorIndex(global.display.get_current_monitor());
+    }
+
     /** Human-readable resolution trace, for diagnosing "nothing happened". */
     describeFocusTarget() {
         const focused = global.display.focus_window;
