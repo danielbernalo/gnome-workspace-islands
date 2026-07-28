@@ -81,6 +81,12 @@ export class MonitorState {
     _place(window, index) {
         this._groups[index].add(window);
         stamp(window, this.connector, index);
+
+        // Back in a group, so no longer owed a ride home. Clearing it here
+        // rather than in the reclaim itself means a window is reclaimed at most
+        // once per disconnect however it got back — under its own steam, by
+        // Mutter, or by us.
+        this._detached?.delete(window);
     }
 
     get size() {
@@ -258,10 +264,28 @@ export class MonitorState {
                 stamp(window, this.connector, index);
         }
 
+        // Which windows this monitor lost, so the ones Mutter does not bring
+        // back can be fetched when it returns. A WeakSet because it is only
+        // ever asked "was this one yours" and never walked — a window closed
+        // while the display is unplugged must not be kept alive by our
+        // bookkeeping, and would be a dead reference by the time it came back.
+        this._detached = new WeakSet(this.allWindows);
+
         this.restoreAll();
 
         for (const group of this._groups)
             group.clear();
+    }
+
+    /**
+     * True if this monitor lost this window when it was unplugged.
+     *
+     * The difference between "belongs here" and "is owed a ride home". A window
+     * the user moved to the laptop screen last week still carries a note naming
+     * this monitor; it was not detached, and dragging it back is their call.
+     */
+    wasDetached(window) {
+        return this._detached?.has(window) ?? false;
     }
 
     /** Resize the workspace count, folding anything beyond the new end. */

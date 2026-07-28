@@ -15,7 +15,7 @@ import GLib from 'gi://GLib';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { Extension, gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
 
-import { Registry, invalidateConnectors } from './monitorState.js';
+import { Registry, invalidateConnectors, monitorIndexOf } from './monitorState.js';
 import { placementConnector } from './placement.js';
 import { Keybindings } from './keybindings.js';
 import { Persistence } from './persistence.js';
@@ -380,15 +380,81 @@ export default class WorkspaceIslands extends Extension {
         if (!this._registry)
             return;
 
-        this._layoutChanging = false;
-
         const live = this._registry.syncMonitors();
+
+        // Before adoption: move_to_monitor() emits window-entered-monitor
+        // synchronously, and that adopts the window on the way past. Adopting
+        // first would file it against the monitor it has not been moved to yet.
+        let reclaimed = 0;
+        for (const connector of live)
+            reclaimed += this._reclaim(connector);
 
         this._adoptExistingWindows();
         for (const state of this._registry.states)
             state.reapply();
 
-        this._afterChange(`monitors settled — ${live.size} secondary`);
+        // Last, not first. Everything above travels through
+        // window-entered-monitor, which reads this flag to tell a relocation
+        // from a drag — lowering it earlier makes our own reclaim look like the
+        // user dragging every window onto the active workspace.
+        this._layoutChanging = false;
+
+        this._afterChange(
+            `monitors settled — ${live.size} secondary` +
+            (reclaimed ? `, ${reclaimed} window(s) reclaimed` : ''));
+    }
+
+    /**
+     * Bring back the windows a returning monitor lost.
+     *
+     * Mutter remembers the output a window came from and usually puts it back
+     * itself, so on real hardware this finds nothing to do. Usually is not
+     * always: virtual displays and some docks come back with a different output
+     * id, and then the monitor returns to empty virtual workspaces while its
+     * windows sit on the laptop screen. That is the reported bug wearing a
+     * different hat.
+     *
+     * Two conditions, both narrow on purpose:
+     *
+     *   the window is one *this monitor* lost when it went away, not merely one
+     *   carrying an old note. A window moved to the primary last week still has
+     *   a note naming this connector; it was never detached, and where it lives
+     *   is the user's decision, not ours.
+     *
+     *   the connector just came back. Edge-triggered, so a resolution change or
+     *   a third display appearing does not drag anything anywhere.
+     *
+     * A window moved to another *secondary* monitor excludes itself with no
+     * special case: that monitor's track() stamped its own connector on the way
+     * in, and _place() dropped it from this one's detached set.
+     *
+     * @returns {number} how many windows were moved back
+     */
+    _reclaim(connector) {
+        const state = this._registry.forConnector(connector);
+        const monitorIndex = monitorIndexOf(connector);
+        if (!state || monitorIndex < 0)
+            return 0;
+
+        let moved = 0;
+
+        for (const actor of global.get_window_actors()) {
+            const window = actor.meta_window;
+
+            if (!window || !state.wasDetached(window))
+                continue;
+
+            // Mutter got there first. Nothing to do, and moving it again would
+            // only re-derive the frame rect for no reason.
+            if (window.get_monitor() === monitorIndex)
+                continue;
+
+            this._log(`reclaiming "${window.get_title()}" onto ${connector}`);
+            window.move_to_monitor(monitorIndex);
+            moved++;
+        }
+
+        return moved;
     }
 
     _trackWindow(window, { trustPlacement = true } = {}) {
