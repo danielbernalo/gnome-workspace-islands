@@ -203,14 +203,22 @@ export class MonitorState {
         return true;
     }
 
-    /** Apply the current active index to every window this monitor holds. */
+    /**
+     * Apply the current active index to every window this monitor holds.
+     *
+     * Instant, never animated. This runs at enable() and after a hotplug —
+     * always "bring the screen in line with a model that changed underneath
+     * it", never a transition the user asked to watch. Animated, an unlock
+     * would open with every window on every inactive workspace minimizing
+     * itself in sequence.
+     */
     reapply() {
         for (let i = 0; i < this.size; i++) {
             for (const window of this.windowsOn(i)) {
                 if (i === this.activeIndex)
-                    show(window);
+                    show(window, { animate: false });
                 else
-                    hide(window);
+                    hide(window, { animate: false });
             }
         }
     }
@@ -219,7 +227,7 @@ export class MonitorState {
     restoreAll() {
         for (const window of this.allWindows) {
             if (isHiddenByUs(window))
-                show(window);
+                show(window, { animate: false });
         }
     }
 
@@ -229,11 +237,29 @@ export class MonitorState {
      * Used when the monitor is unplugged: its windows have already been moved
      * to another monitor by Mutter, and any we had hidden are still minimized
      * — invisible on a monitor that has no virtual workspaces to explain why.
-     * They get shown and dropped. activeIndex and the app rules survive, so
-     * plugging the display back in restores its arrangement.
+     * They get shown and dropped.
+     *
+     * The groups really are cleared, and that is deliberate. Keeping them would
+     * mean two monitors owning the same window: the display that took the
+     * windows tracks them, and this one would still hold them and minimize them
+     * on its next switch — a window on the other screen vanishing for no
+     * visible reason. The note replaces the group; it does not supplement it.
+     *
+     * Re-stamping first is what makes the unplug survivable. Every window in a
+     * group is already stamped — _place() is the only way in — so the loop is
+     * redundant today, and it is written out anyway because this is the one
+     * place where the note stops being a second copy of the group and becomes
+     * the only surviving record of it. A future edit that finds another way
+     * into a group should fail here, not silently on the next dock.
      */
     detach() {
+        for (let index = 0; index < this.size; index++) {
+            for (const window of this.windowsOn(index))
+                stamp(window, this.connector, index);
+        }
+
         this.restoreAll();
+
         for (const group of this._groups)
             group.clear();
     }
