@@ -106,7 +106,7 @@ import {
     WORKSPACE_SPACING,
 } from 'resource:///org/gnome/shell/ui/workspaceAnimation.js';
 
-import { connectorOf } from './monitorState.js';
+import { monitorIndexOf } from './monitorState.js';
 import { hide, reveal } from './visibility.js';
 
 /** Identifies the replacement action on the stage; SwipeTracker uses it too. */
@@ -683,9 +683,4 @@ function previewIndex(slide, progress) {
     const to = indices[clamp(Math.ceil(progress))];
 
     return from + (to - from) * (progress - lower);
-}
-
-function monitorIndexOf(connector) {
-    return Main.layoutManager.monitors.findIndex(
-        (monitor, index) => connectorOf(monitor, index) === connector);
 }

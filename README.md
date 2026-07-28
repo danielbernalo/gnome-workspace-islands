@@ -166,7 +166,7 @@ The **Diagnostics** section of the same page shows the live state of `workspaces
 
 Windows have **no stable identity across sessions** — a window is a live object, and no id outlives a logout. So "put this exact window back on workspace 2" is not implementable by anyone. What is stored instead:
 
-- **Which workspace each monitor was left on**, keyed by the physical connector, so unplugging a display and plugging it back in returns it to the arrangement you left.
+- **Which workspace each monitor was left on**, keyed by the physical connector — the name the backend gives the output, like `HDMI-2` — so a display that comes back returns to its own arrangement no matter which position it comes back in.
 - **Where each application belongs.** New windows of an app land where you last put that app. A deliberate heuristic: two windows of the same app go to the same place, which is usually right and always correctable by moving the window.
 
 ## Troubleshooting

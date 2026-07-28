@@ -42,7 +42,7 @@ import * as Layout from 'resource:///org/gnome/shell/ui/layout.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { ANIMATION_TIME } from 'resource:///org/gnome/shell/ui/workspaceSwitcherPopup.js';
 
-import { connectorOf } from './monitorState.js';
+import { monitorIndexOf } from './monitorState.js';
 
 /** How long the pill stays up. The shell keeps its copy private, so: duplicated. */
 const DISPLAY_TIMEOUT = 600;
@@ -197,10 +197,4 @@ export class SwitcherPopup {
 
         this._popups.clear();
     }
-}
-
-/** Current index for a connector, or -1 if that monitor is not attached. */
-function monitorIndexOf(connector) {
-    return Main.layoutManager.monitors.findIndex(
-        (monitor, index) => connectorOf(monitor, index) === connector);
 }

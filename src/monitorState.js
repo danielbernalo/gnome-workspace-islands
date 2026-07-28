@@ -11,7 +11,9 @@
  * set of windows we agree to show together.
  *
  * Monitors are keyed by `connector` (e.g. "HDMI-2") rather than by index,
- * because indices are reshuffled on hotplug while connectors are stable.
+ * because indices are reshuffled on hotplug while connectors are stable. The
+ * name comes from the backend, not from the shell's `Monitor` — see
+ * {@link connectorOf}, which is where that distinction was once lost.
  */
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -262,11 +264,11 @@ export class Registry {
         const primaryIndex = Main.layoutManager.primaryIndex;
         const live = new Set();
 
-        Main.layoutManager.monitors.forEach((monitor, index) => {
+        Main.layoutManager.monitors.forEach((_monitor, index) => {
             if (index === primaryIndex)
                 return;
 
-            const connector = connectorOf(monitor, index);
+            const connector = connectorOf(index);
             live.add(connector);
 
             if (!this._states.has(connector))
@@ -299,11 +301,10 @@ export class Registry {
         if (index < 0 || index === Main.layoutManager.primaryIndex)
             return null;
 
-        const monitor = Main.layoutManager.monitors[index];
-        if (!monitor)
+        if (!Main.layoutManager.monitors[index])
             return null;
 
-        return this.forConnector(connectorOf(monitor, index));
+        return this.forConnector(connectorOf(index));
     }
 
     /** State for the monitor a window sits on, or null if it is on primary. */
@@ -312,11 +313,10 @@ export class Registry {
         if (index < 0 || index === Main.layoutManager.primaryIndex)
             return null;
 
-        const monitor = Main.layoutManager.monitors[index];
-        if (!monitor)
+        if (!Main.layoutManager.monitors[index])
             return null;
 
-        return this.forConnector(connectorOf(monitor, index));
+        return this.forConnector(connectorOf(index));
     }
 
     /**
@@ -333,11 +333,10 @@ export class Registry {
         if (index < 0 || index === Main.layoutManager.primaryIndex)
             return null;
 
-        const monitor = Main.layoutManager.monitors[index];
-        if (!monitor)
+        if (!Main.layoutManager.monitors[index])
             return null;
 
-        return this.forConnector(connectorOf(monitor, index));
+        return this.forConnector(connectorOf(index));
     }
 
     /** Human-readable resolution trace, for diagnosing "nothing happened". */
@@ -374,8 +373,53 @@ export class Registry {
     }
 }
 
-export function connectorOf(monitor, index) {
-    return monitor.connector ?? `monitor-${index}`;
+/**
+ * The connector driving a monitor index — "HDMI-2", not "monitor-1".
+ *
+ * This module is keyed by connector precisely because indices are reshuffled on
+ * hotplug. Until now that was an intention rather than a fact: the shell's
+ * `Monitor` is `(index, geometry, scale)` and carries no name, so
+ * `monitor.connector` was always undefined and every key fell through to the
+ * positional fallback. The model was keyed by index after all — unplug a
+ * display, plug it back in second instead of first, and "the LG's workspace 3"
+ * was restored onto whatever now sat at index 1.
+ *
+ * The name has to come from the backend. `get_monitor_for_connector` answers
+ * with the logical monitor index a connector currently drives, and that is the
+ * same index space `Main.layoutManager.monitors` uses, so one pass over the
+ * attached monitors gives exactly the mapping this module always assumed it had.
+ */
+export function connectorOf(index) {
+    try {
+        const manager = global.backend.get_monitor_manager();
+
+        for (const monitor of manager.get_monitors()) {
+            if (!monitor.is_active())
+                continue;
+
+            const connector = monitor.get_connector();
+            if (connector && manager.get_monitor_for_connector(connector) === index)
+                return connector;
+        }
+    } catch (e) {
+        // A backend that cannot name its monitors is not a reason to stop
+        // working. Positional keys are what this did before, and they are right
+        // for as long as nothing is unplugged.
+        console.warn(`workspace-islands: could not read monitor connectors: ${e}`);
+    }
+
+    return `monitor-${index}`;
+}
+
+/**
+ * Current index for a connector, or -1 if that display is not attached.
+ *
+ * Lives here rather than in the two modules that had identical private copies:
+ * both were scanning a monitor list that does not know its own names.
+ */
+export function monitorIndexOf(connector) {
+    return Main.layoutManager.monitors.findIndex(
+        (_monitor, index) => connectorOf(index) === connector);
 }
 
 function clamp(value, min, max) {
