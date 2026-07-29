@@ -301,6 +301,11 @@ export default class WorkspaceIslands extends Extension {
             const connector = placementConnector(window);
             if (connector)
                 this._registry.forConnector(connector)?.untrack(window);
+
+            // untrack() can shrink the monitor in dynamic mode, which the
+            // panel dots need to hear about the same way _trackWindow() and
+            // the 'unmanaged' handler already tell them about a change.
+            this._indicator?.sync();
         });
 
         // Mutter announces a layout change before it applies one, and it moves
@@ -651,9 +656,13 @@ export default class WorkspaceIslands extends Extension {
         if (announce)
             this._popup?.show(state);
 
+        // Not `index`: switchTo() can have just collapsed an empty workspace
+        // and shifted everything after it, including the one just landed on
+        // — activeIndex is the one value guaranteed to still name it, same
+        // reasoning as the slide.js fix for the same underlying cause.
         this._afterChange(
-            `${state.connector} -> virtual workspace ${index + 1} ` +
-            `(${state.windowsOn(index).length} window(s))`);
+            `${state.connector} -> virtual workspace ${state.activeIndex + 1} ` +
+            `(${state.activeWindows.length} window(s))`);
     }
 
     /** Single place where a state change is persisted, shown and logged. */
