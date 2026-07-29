@@ -32,6 +32,14 @@ const ONLY_ON_PRIMARY = 'workspaces-only-on-primary';
 const PAPERWM_UUID = 'paperwm@paperwm.github.com';
 
 /**
+ * The schema only defines `switch-to-1` through `switch-to-8` — the same
+ * ceiling `prefs.js`'s shortcut list assumes. In dynamic mode there is no
+ * setting to read a smaller number from (the static count is irrelevant and
+ * greyed out in prefs), so this is the count to bind up to instead.
+ */
+const MAX_DIRECT_SWITCH_KEYS = 8;
+
+/**
  * How long to wait for the monitor layout to stop moving.
  *
  * `monitors-changed` is not one event. A resume or a DP-MST dock emits it two
@@ -64,6 +72,7 @@ export default class WorkspaceIslands extends Extension {
 
         this._registry = new Registry(
             this._settings.get_int('virtual-workspaces'),
+            this._settings.get_boolean('dynamic-virtual-workspaces'),
             this._persistence.load()
         );
         this._registry.syncMonitors();
@@ -78,9 +87,14 @@ export default class WorkspaceIslands extends Extension {
         this._adoptExistingWindows();
 
         // Existing windows were adopted against the restored active index, so
-        // bring the screen in line with it before anyone looks at it.
-        for (const state of this._registry.states)
+        // bring the screen in line with it before anyone looks at it. Also
+        // reconciles size: a saved arrangement can grow a state to fit indices
+        // it doesn't have windows for this session, leaving trailing empties
+        // dynamic mode never got a chance to trim reactively.
+        for (const state of this._registry.states) {
             state.reapply();
+            state.reconcileSize();
+        }
 
         this._connectSignals();
         this._bindKeys();
@@ -287,6 +301,11 @@ export default class WorkspaceIslands extends Extension {
             const connector = placementConnector(window);
             if (connector)
                 this._registry.forConnector(connector)?.untrack(window);
+
+            // untrack() can shrink the monitor in dynamic mode, which the
+            // panel dots need to hear about the same way _trackWindow() and
+            // the 'unmanaged' handler already tell them about a change.
+            this._indicator?.sync();
         });
 
         // Mutter announces a layout change before it applies one, and it moves
@@ -343,10 +362,21 @@ export default class WorkspaceIslands extends Extension {
         });
 
         this._connect(this._settings, 'changed::virtual-workspaces', () => {
-            this._registry.resize(this._settings.get_int('virtual-workspaces'));
+            this._registry.setFixedCount(this._settings.get_int('virtual-workspaces'));
             this._keys.removeAll();
             this._bindKeys();
             this._afterChange('workspace count changed');
+        });
+
+        this._connect(this._settings, 'changed::dynamic-virtual-workspaces', () => {
+            this._registry.setDynamic(this._settings.get_boolean('dynamic-virtual-workspaces'));
+
+            // _bindKeys() reads this same setting to decide how many
+            // switch-to-N keys to register, so the toggle needs the same
+            // rebind the virtual-workspaces handler above already does.
+            this._keys.removeAll();
+            this._bindKeys();
+            this._afterChange('dynamic workspaces toggled');
         });
     }
 
@@ -407,8 +437,10 @@ export default class WorkspaceIslands extends Extension {
             reclaimed += this._reclaim(connector);
 
         this._adoptExistingWindows();
-        for (const state of this._registry.states)
+        for (const state of this._registry.states) {
             state.reapply();
+            state.reconcileSize();
+        }
 
         // Last, not first. Everything above travels through
         // window-entered-monitor, which reads this flag to tell a relocation
@@ -545,12 +577,21 @@ export default class WorkspaceIslands extends Extension {
     }
 
     _bindKeys() {
-        const count = this._settings.get_int('virtual-workspaces');
+        // Dynamic mode has no setting to cap this at — the static count is
+        // irrelevant and greyed out in prefs — so bind up to the schema's own
+        // ceiling instead of whatever the (unrelated) static count is left at.
+        const count = this._settings.get_boolean('dynamic-virtual-workspaces')
+            ? MAX_DIRECT_SWITCH_KEYS
+            : this._settings.get_int('virtual-workspaces');
 
-        // Only up to `count`: the remaining schema keys default to an empty
-        // accelerator list, and registering those just logs noise.
-        for (let i = 1; i <= count; i++)
-            this._keys.add(`switch-to-${i}`, () => this._switchTo(i - 1));
+        // Only where an accelerator is actually set: switch-to-5..8 default to
+        // an empty list, and registering those anyway just logs noise for a
+        // shortcut nobody asked for.
+        for (let i = 1; i <= count; i++) {
+            const name = `switch-to-${i}`;
+            if (this._settings.get_strv(name).length > 0)
+                this._keys.add(name, () => this._switchTo(i - 1));
+        }
 
         this._keys.add('switch-next', () => this._switchRelative(1));
         this._keys.add('switch-prev', () => this._switchRelative(-1));
@@ -615,9 +656,13 @@ export default class WorkspaceIslands extends Extension {
         if (announce)
             this._popup?.show(state);
 
+        // Not `index`: switchTo() can have just collapsed an empty workspace
+        // and shifted everything after it, including the one just landed on
+        // — activeIndex is the one value guaranteed to still name it, same
+        // reasoning as the slide.js fix for the same underlying cause.
         this._afterChange(
-            `${state.connector} -> virtual workspace ${index + 1} ` +
-            `(${state.windowsOn(index).length} window(s))`);
+            `${state.connector} -> virtual workspace ${state.activeIndex + 1} ` +
+            `(${state.activeWindows.length} window(s))`);
     }
 
     /** Single place where a state change is persisted, shown and logged. */

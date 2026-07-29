@@ -243,19 +243,11 @@ class IslandsThumbnails extends St.Widget {
 
         this._monitor = monitor;
         this._state = state;
+        this._onActivate = onActivate;
+        this._onDrop = onDrop;
 
         this._thumbnails = [];
-
-        for (let index = 0; index < state.size; index++) {
-            const thumbnail = new Thumbnail(monitor, state, index, onDrop);
-
-            const click = new Clutter.ClickGesture();
-            click.connect('recognize', () => onActivate(index));
-            thumbnail.add_action(click);
-
-            this.add_child(thumbnail);
-            this._thumbnails.push(thumbnail);
-        }
+        this._buildThumbnails();
 
         // A separate actor rather than a border on the active thumbnail: it is
         // how the shell draws it, and it can be moved without a restyle.
@@ -267,10 +259,43 @@ class IslandsThumbnails extends St.Widget {
         this.setActive(state.activeIndex);
     }
 
-    /** Re-read the model. A drop moved a window between two of these. */
-    refresh() {
-        this._thumbnails.forEach(
-            (thumbnail, index) => thumbnail.setWindows(this._state.windowsOn(index)));
+    /**
+     * Below `this._indicator` when it already exists, so a rebuild does not
+     * repaint the fresh thumbnails on top of it — the indicator is a border
+     * overlay and has to stay the topmost child. Not yet built the first
+     * time this runs, from the constructor, so a plain append is right there.
+     */
+    _buildThumbnails() {
+        for (let index = 0; index < this._state.size; index++) {
+            const thumbnail = new Thumbnail(this._monitor, this._state, index, this._onDrop);
+
+            const click = new Clutter.ClickGesture();
+            click.connect('recognize', () => this._onActivate(index));
+            thumbnail.add_action(click);
+
+            if (this._indicator)
+                this.insert_child_below(thumbnail, this._indicator);
+            else
+                this.add_child(thumbnail);
+            this._thumbnails.push(thumbnail);
+        }
+    }
+
+    /**
+     * Destroy and recreate every thumbnail from the current `state.size`.
+     *
+     * Mirrors the constructor's own loop; a straightforward destroy-and-
+     * recreate is enough because a workspace count change is an infrequent,
+     * human-scale event, not a per-frame one.
+     */
+    rebuild() {
+        for (const thumbnail of this._thumbnails)
+            thumbnail.destroy();
+
+        this._thumbnails = [];
+        this._buildThumbnails();
+
+        this.setActive(this._state.activeIndex);
     }
 
     setActive(index) {
@@ -388,11 +413,17 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
             (...args) => this._drop(...args));
         this.add_child(this._thumbnails);
 
+        // Growth/shrink can happen at any time in dynamic mode, not just after
+        // a drop — a page or thumbnail appearing/disappearing needs the same
+        // rebuild, just triggered reactively instead of from _drop().
+        this._unsubscribeSize = state.onSizeChanged(() => this._scheduleRefresh());
+
         this.connect('destroy', () => {
             if (this._refreshId) {
                 GLib.Source.remove(this._refreshId);
                 this._refreshId = 0;
             }
+            this._unsubscribeSize?.();
         });
 
         this._updateWorkspacesState();
@@ -409,14 +440,22 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
      */
     _drop(index, window, monitorIndex) {
         this._onDrop(index, window, monitorIndex);
+        this._scheduleRefresh();
+    }
 
+    /**
+     * Coalesce any number of drops/size-changes within one main loop turn into
+     * a single rebuild that reads the final state — a burst of growth/shrink
+     * from rapid open/close only costs one rebuild, not one per event.
+     */
+    _scheduleRefresh() {
         if (this._refreshId)
             return;
 
         this._refreshId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
             this._refreshId = 0;
             this._rebuildPages();
-            this._thumbnails.refresh();
+            this._thumbnails.rebuild();
             return GLib.SOURCE_REMOVE;
         });
     }
@@ -441,6 +480,16 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         // The first page stands in for `this._workspace`, which the parent
         // class still reaches for in _updateWorkspaceMode.
         this._workspace = this._pages[0];
+
+        // Only ever read at construction until now, because a drop never
+        // changed page count. Structural size changes do, so the scroll
+        // range has to move in lock-step with the rebuilt page list — and
+        // `value` has to move with it: a collapse can shift `activeIndex`
+        // out from under a `value` that's still in range, which leaves the
+        // pages showing one workspace while the thumbnail strip highlights
+        // another.
+        this._scrollAdjustment.upper = this._state.size;
+        this._scrollAdjustment.value = this._state.activeIndex;
 
         this._updateWorkspacesState();
         this.queue_relayout();

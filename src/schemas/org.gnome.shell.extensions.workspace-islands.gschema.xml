@@ -4,6 +4,17 @@
   <schema id="org.gnome.shell.extensions.workspace-islands"
           path="/org/gnome/shell/extensions/workspace-islands/">
 
+    <key name="dynamic-virtual-workspaces" type="b">
+      <default>false</default>
+      <summary>Grow and shrink virtual workspaces automatically</summary>
+      <description>
+        Each secondary monitor grows its own virtual workspaces as they fill up
+        and shrinks them back down as they empty, always keeping one empty
+        workspace ready at the end — like GNOME's own dynamic workspaces. When
+        off, every monitor uses the fixed count below instead.
+      </description>
+    </key>
+
     <key name="virtual-workspaces" type="i">
       <default>4</default>
       <range min="2" max="8"/>

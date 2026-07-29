@@ -56,6 +56,16 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
                 'one. The primary monitor keeps using GNOME’s own workspaces.'),
         });
 
+        const dynamic = new Adw.SwitchRow({
+            title: _('Dynamic workspaces'),
+            subtitle: _('Each monitor grows and shrinks its own workspaces as ' +
+                'they fill up and empty, with no maximum, always keeping one ' +
+                'empty one ready — like GNOME’s own dynamic workspaces.'),
+        });
+        settings.bind('dynamic-virtual-workspaces', dynamic, 'active',
+            Gio.SettingsBindFlags.DEFAULT);
+        group.add(dynamic);
+
         const count = new Adw.SpinRow({
             title: _('Workspaces per monitor'),
             adjustment: new Gtk.Adjustment({
@@ -67,6 +77,10 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
         });
         settings.bind('virtual-workspaces', count, 'value',
             Gio.SettingsBindFlags.DEFAULT);
+        // Only applies with dynamic workspaces off — greyed out otherwise
+        // rather than left looking like it still does something.
+        settings.bind('dynamic-virtual-workspaces', count, 'sensitive',
+            Gio.SettingsBindFlags.INVERT_BOOLEAN);
         group.add(count);
 
         page.add(group);
