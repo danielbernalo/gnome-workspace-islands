@@ -191,6 +191,18 @@ class IslandsSlidePage extends Clutter.Actor {
  *
  * `progress` is a GObject property so it can be eased and bound — which is what
  * lets a swipe and a keypress drive the identical code path.
+ *
+ * Known gap: `_pages` captures workspace indices once, at gesture start, and
+ * never revisits them. In dynamic mode a window closing mid-gesture can fire
+ * `untrack()` -> `MonitorState._reconcileEmpties()`, which renumbers every
+ * workspace after the one it collapses — underneath a slide already holding
+ * the old numbers. `SlideController._finish()` reads `state.activeIndex`
+ * fresh at commit time, so the *landing* workspace is always right, but a
+ * gesture already in flight is still animating against stale indices for
+ * whichever pages it prepared before that. Fixing this for real would mean
+ * subscribing to `state.onSizeChanged()` for the life of the gesture and
+ * re-mapping `indices` through the same kind of old-to-new translation
+ * `_reconcileEmpties()` builds internally — which isn't exposed today.
  */
 const Slide = GObject.registerClass({
     Properties: {
