@@ -133,9 +133,10 @@ gnome-extensions prefs workspace-islands@danielbernalo.github.io
 
 | Option | Default | What it does |
 | --- | --- | --- |
-| **Workspaces per monitor** | `4` | How many workspaces each secondary monitor gets. Range 2–8. Applies to every secondary monitor; the primary keeps using GNOME's own. |
+| **Dynamic workspaces** | off | Each secondary monitor grows its own workspaces as they fill up and shrinks them back down as they empty, with no maximum — matching GNOME's own dynamic workspaces. Always keeps one empty workspace in reserve; an empty one elsewhere collapses too, unless it's the one you're on. |
+| **Workspaces per monitor** | `4` | The fixed number of workspaces each secondary monitor gets. Range 2–8. Only applies while Dynamic workspaces is off — greyed out otherwise. |
 
-Lowering the count folds everything beyond the new end into the last workspace rather than losing those windows.
+Lowering the count folds everything beyond the new end into the last workspace rather than losing those windows. Turning Dynamic workspaces on or off never changes what this setting means; it only decides whether the fixed count is enforced.
 
 ### Switching
 
