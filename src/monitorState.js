@@ -22,12 +22,49 @@ import { hide, show, isHiddenByUs } from './visibility.js';
 import { appKeyOf } from './persistence.js';
 import { stamp, placementIndex } from './placement.js';
 
+/**
+ * Every monitor keeps at least this many virtual workspaces, dynamic or not.
+ *
+ * Below 2, `overview.js` and `slide.js` fall back to treating the monitor as
+ * having no virtual workspaces at all (plain overview, no swipe) — a floor of
+ * 2 keeps that branch permanently unreachable instead of needing the monitor's
+ * overview to swap view types live as it shrinks and grows.
+ */
+const MIN_SIZE = 2;
+
 export class MonitorState {
-    constructor(connector, size) {
+    /**
+     * @param {string} connector
+     * @param {boolean} [dynamic] grow/shrink with occupancy instead of
+     *   staying at whatever count `Registry` applies externally
+     */
+    constructor(connector, dynamic = false) {
         this.connector = connector;
         this.activeIndex = 0;
-        this._groups = Array.from({ length: size }, () => new Set());
+        this._dynamic = dynamic;
+        this._groups = Array.from({ length: MIN_SIZE }, () => new Set());
         this._appRules = new Map();
+        this._sizeListeners = new Set();
+    }
+
+    setDynamic(dynamic) {
+        this._dynamic = dynamic;
+    }
+
+    /**
+     * Notified whenever `size` actually changes.
+     *
+     * @param {() => void} callback
+     * @returns {() => void} unsubscribe
+     */
+    onSizeChanged(callback) {
+        this._sizeListeners.add(callback);
+        return () => this._sizeListeners.delete(callback);
+    }
+
+    _notifySizeChanged() {
+        for (const listener of this._sizeListeners)
+            listener();
     }
 
     /** Plain object for serialisation: WM_CLASS -> virtual workspace index. */
@@ -35,8 +72,23 @@ export class MonitorState {
         return Object.fromEntries(this._appRules);
     }
 
-    /** Restore a previously saved arrangement. Indices are clamped, not trusted. */
+    /**
+     * Restore a previously saved arrangement. Indices are clamped, not trusted.
+     *
+     * Grows to fit app rules first: a monitor starts at {@link MIN_SIZE}
+     * regardless of mode, so a saved rule pointing at workspace 5 would
+     * otherwise collapse to whatever the floor is before the app it predicts
+     * ever gets a chance to reopen there. `activeIndex` alone does not force
+     * growth — it says only where the user was looking last time, not that
+     * anything lives there, and a static-mode restore is finalised by the
+     * unconditional resize to the fixed count right after this call anyway.
+     */
     restore({ activeIndex = 0, apps = {} } = {}) {
+        const appIndices = Object.values(apps).filter(Number.isInteger);
+        const needed = appIndices.length ? Math.max(...appIndices) + 1 : 0;
+        if (needed > this.size)
+            this.resize(needed);
+
         this.activeIndex = clamp(activeIndex, 0, this.size - 1);
 
         this._appRules = new Map(
@@ -154,6 +206,7 @@ export class MonitorState {
             target = this.activeIndex;
 
         this._place(window, target);
+        this._growIfNeeded(target);
 
         if (target !== this.activeIndex)
             hide(window);
@@ -162,8 +215,13 @@ export class MonitorState {
     }
 
     untrack(window) {
+        const from = this.indexOf(window);
+
         for (const group of this._groups)
             group.delete(window);
+
+        if (from !== -1)
+            this._reconcileEmpties();
     }
 
     /**
@@ -183,6 +241,13 @@ export class MonitorState {
             hide(window, { animate });
 
         this.activeIndex = index;
+
+        // The workspace just left may have been empty and is no longer
+        // protected by being active — exactly what makes it removable now,
+        // the same way native GNOME drops an empty workspace once you switch
+        // away from it.
+        this._reconcileEmpties();
+
         return true;
     }
 
@@ -196,6 +261,7 @@ export class MonitorState {
 
         this._groups[from].delete(window);
         this._place(window, index);
+        this._growIfNeeded(index);
 
         // Moving a window by hand is the strongest signal we get about where
         // its application belongs, so it updates the rule.
@@ -205,6 +271,9 @@ export class MonitorState {
             show(window);
         else
             hide(window);
+
+        // The group it left behind, not the one it joined — that one just grew.
+        this._reconcileEmpties();
 
         return true;
     }
@@ -290,37 +359,137 @@ export class MonitorState {
 
     /** Resize the workspace count, folding anything beyond the new end. */
     resize(size) {
-        if (size === this.size || size < 1)
+        if (size === this.size || size < MIN_SIZE)
             return;
 
         if (size > this.size) {
             while (this._groups.length < size)
                 this._groups.push(new Set());
+        } else {
+            // Shrinking: everything past the new end collapses into the last
+            // group rather than vanishing along with its windows.
+            const tail = this._groups.splice(size);
+            for (const group of tail) {
+                for (const window of group)
+                    this._place(window, size - 1);
+            }
+
+            if (this.activeIndex >= size)
+                this.activeIndex = size - 1;
+
+            // Rules pointing past the new end would silently send windows nowhere.
+            for (const [key, index] of this._appRules) {
+                if (index >= size)
+                    this._appRules.set(key, size - 1);
+            }
+        }
+
+        this._notifySizeChanged();
+    }
+
+    /**
+     * Grow by one if the group a window just landed in was the last one.
+     *
+     * Only in dynamic mode, and with no ceiling — the same shape as GNOME's
+     * own dynamic workspaces always keeping one empty one in reserve.
+     */
+    _growIfNeeded(index) {
+        if (this._dynamic && index === this.size - 1)
+            this.resize(this.size + 1);
+    }
+
+    /**
+     * Remove every empty group except the active one and the last one,
+     * shifting later indices down to fill the gap.
+     *
+     * Only in dynamic mode. Matches native GNOME dynamic workspaces: an empty
+     * workspace disappears unless it's the one you're looking at (removing
+     * that out from under you would be jarring) or the trailing spare (always
+     * kept in reserve). A no-op if nothing qualifies, so it is cheap to call
+     * after anything that might have emptied a group.
+     */
+    _reconcileEmpties() {
+        if (!this._dynamic)
             return;
+
+        const lastIndex = this.size - 1;
+        const removable = [];
+        for (let i = 0; i < this.size; i++) {
+            if (i === this.activeIndex || i === lastIndex)
+                continue;
+            if (this._groups[i].size === 0)
+                removable.push(i);
+        }
+        if (removable.length === 0)
+            return;
+
+        // Never below the floor, even if that means leaving some empty
+        // slots in place — see MIN_SIZE.
+        const toRemove = new Set(removable.slice(0, Math.max(0, this.size - MIN_SIZE)));
+        if (toRemove.size === 0)
+            return;
+
+        // Re-stamp windows whose index changed as each slot is kept, so a
+        // future reclaim/restore agrees with where they actually ended up —
+        // _place() is the only other writer of this note, and it isn't
+        // involved in a pure re-index.
+        const oldToNew = new Map();
+        const newGroups = [];
+        for (let i = 0; i < this.size; i++) {
+            if (toRemove.has(i))
+                continue;
+
+            const newIndex = newGroups.length;
+            oldToNew.set(i, newIndex);
+            newGroups.push(this._groups[i]);
+
+            if (i !== newIndex) {
+                for (const window of this._groups[i])
+                    stamp(window, this.connector, newIndex);
+            }
         }
 
-        // Shrinking: everything past the new end collapses into the last group
-        // rather than vanishing along with its windows.
-        const tail = this._groups.splice(size);
-        for (const group of tail) {
-            for (const window of group)
-                this._place(window, size - 1);
-        }
+        this._groups = newGroups;
+        this.activeIndex = oldToNew.get(this.activeIndex);
 
-        if (this.activeIndex >= size)
-            this.activeIndex = size - 1;
-
-        // Rules pointing past the new end would silently send windows nowhere.
-        for (const [key, index] of this._appRules) {
-            if (index >= size)
-                this._appRules.set(key, size - 1);
+        // A rule pointing at a slot that just got removed for being empty
+        // loses its home — dropped, the same way a stale rule a shrink can't
+        // reach is already dropped today, rather than remapped to somewhere
+        // it never asked for.
+        const newAppRules = new Map();
+        for (const [key, oldIndex] of this._appRules) {
+            if (oldToNew.has(oldIndex))
+                newAppRules.set(key, oldToNew.get(oldIndex));
         }
+        this._appRules = newAppRules;
+
+        this._notifySizeChanged();
+    }
+
+    /**
+     * Re-establish the dynamic-mode empty-workspace invariant after something
+     * that changes membership without going through
+     * track()/untrack()/moveWindowTo()/switchTo() — a restore that grew to
+     * fit saved data, or a hotplug that reclaimed some windows but not
+     * others. Safe to call unconditionally; a no-op outside dynamic mode or
+     * when the invariant already holds.
+     */
+    reconcileSize() {
+        this._reconcileEmpties();
     }
 }
 
 export class Registry {
-    constructor(size, saved = { monitors: {} }) {
-        this._size = size;
+    /**
+     * @param {number} fixedCount the exact count applied when not dynamic;
+     *   has no effect on a monitor currently in dynamic mode, which grows
+     *   without a ceiling
+     * @param {boolean} dynamic
+     * @param {object} [saved]
+     */
+    constructor(fixedCount, dynamic, saved = { monitors: {} }) {
+        this._fixedCount = fixedCount;
+        this._dynamic = dynamic;
         this._states = new Map();
 
         // Kept around rather than applied once: a monitor plugged in later in
@@ -329,18 +498,24 @@ export class Registry {
     }
 
     _createState(connector) {
-        const state = new MonitorState(connector, this._size);
+        const state = new MonitorState(connector, this._dynamic);
 
         const saved = this._saved?.monitors?.[connector];
         if (saved)
             state.restore(saved);
 
+        // Fixed mode: bring a freshly-created (or partially grown-to-fit-saved-
+        // data) state up to the exact configured count, same as always. Dynamic
+        // mode never force-grows — size is earned by occupancy from here on.
+        if (!this._dynamic)
+            state.resize(this._fixedCount);
+
         this._states.set(connector, state);
         return state;
     }
 
-    get size() {
-        return this._size;
+    get fixedCount() {
+        return this._fixedCount;
     }
 
     get states() {
@@ -372,10 +547,39 @@ export class Registry {
         return live;
     }
 
-    resize(size) {
-        this._size = size;
+    /**
+     * Change the static-mode count.
+     *
+     * Applied immediately only to monitors currently in fixed mode. A
+     * dynamic monitor has no ceiling to change — the new value is just
+     * remembered for whenever fixed mode resumes on it.
+     */
+    setFixedCount(count) {
+        this._fixedCount = count;
+        if (this._dynamic)
+            return;
+
         for (const state of this._states.values())
-            state.resize(size);
+            state.resize(count);
+    }
+
+    /**
+     * Switch every monitor between fixed and dynamic.
+     *
+     * Fixed -> dynamic: trims any excess trailing empties, but does not
+     * force-grow anything — growth resumes organically from here.
+     * Dynamic -> fixed: forces every monitor to the exact configured count,
+     * identical to a plain count change today.
+     */
+    setDynamic(dynamic) {
+        this._dynamic = dynamic;
+        for (const state of this._states.values()) {
+            state.setDynamic(dynamic);
+            if (dynamic)
+                state.reconcileSize();
+            else
+                state.resize(this._fixedCount);
+        }
     }
 
     forConnector(connector) {

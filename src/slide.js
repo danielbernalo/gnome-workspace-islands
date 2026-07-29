@@ -556,7 +556,13 @@ export class SlideController {
         this._claimed = false;
 
         this._onCommit(session.state, index, { gesture: session.gesture });
-        this._settle(session, index);
+
+        // Not `index`: onCommit's switchTo() may have just collapsed an empty
+        // workspace and shifted everything after it, including the one we
+        // landed on. state.activeIndex is the one value guaranteed to still
+        // point at it — session.state.indexOf() below has to agree with the
+        // same numbering, or a page that's actually current gets re-hidden.
+        this._settle(session, session.state.activeIndex);
         this._teardown(session);
     }
 

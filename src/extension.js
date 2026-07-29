@@ -64,6 +64,7 @@ export default class WorkspaceIslands extends Extension {
 
         this._registry = new Registry(
             this._settings.get_int('virtual-workspaces'),
+            this._settings.get_boolean('dynamic-virtual-workspaces'),
             this._persistence.load()
         );
         this._registry.syncMonitors();
@@ -78,9 +79,14 @@ export default class WorkspaceIslands extends Extension {
         this._adoptExistingWindows();
 
         // Existing windows were adopted against the restored active index, so
-        // bring the screen in line with it before anyone looks at it.
-        for (const state of this._registry.states)
+        // bring the screen in line with it before anyone looks at it. Also
+        // reconciles size: a saved arrangement can grow a state to fit indices
+        // it doesn't have windows for this session, leaving trailing empties
+        // dynamic mode never got a chance to trim reactively.
+        for (const state of this._registry.states) {
             state.reapply();
+            state.reconcileSize();
+        }
 
         this._connectSignals();
         this._bindKeys();
@@ -343,10 +349,15 @@ export default class WorkspaceIslands extends Extension {
         });
 
         this._connect(this._settings, 'changed::virtual-workspaces', () => {
-            this._registry.resize(this._settings.get_int('virtual-workspaces'));
+            this._registry.setFixedCount(this._settings.get_int('virtual-workspaces'));
             this._keys.removeAll();
             this._bindKeys();
             this._afterChange('workspace count changed');
+        });
+
+        this._connect(this._settings, 'changed::dynamic-virtual-workspaces', () => {
+            this._registry.setDynamic(this._settings.get_boolean('dynamic-virtual-workspaces'));
+            this._afterChange('dynamic workspaces toggled');
         });
     }
 
@@ -407,8 +418,10 @@ export default class WorkspaceIslands extends Extension {
             reclaimed += this._reclaim(connector);
 
         this._adoptExistingWindows();
-        for (const state of this._registry.states)
+        for (const state of this._registry.states) {
             state.reapply();
+            state.reconcileSize();
+        }
 
         // Last, not first. Everything above travels through
         // window-entered-monitor, which reads this flag to tell a relocation
