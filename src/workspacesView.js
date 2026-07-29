@@ -483,8 +483,13 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
 
         // Only ever read at construction until now, because a drop never
         // changed page count. Structural size changes do, so the scroll
-        // range has to move in lock-step with the rebuilt page list.
+        // range has to move in lock-step with the rebuilt page list — and
+        // `value` has to move with it: a collapse can shift `activeIndex`
+        // out from under a `value` that's still in range, which leaves the
+        // pages showing one workspace while the thumbnail strip highlights
+        // another.
         this._scrollAdjustment.upper = this._state.size;
+        this._scrollAdjustment.value = this._state.activeIndex;
 
         this._updateWorkspacesState();
         this.queue_relayout();

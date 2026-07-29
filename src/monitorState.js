@@ -73,22 +73,19 @@ export class MonitorState {
     }
 
     /**
-     * Restore a previously saved arrangement. Indices are clamped, not trusted.
+     * Restore a previously saved arrangement. Indices are clamped, not
+     * trusted — `apps` comes straight out of a JSON blob in gsettings, and
+     * nothing about its shape is validated beyond "is this an object". A
+     * corrupted or hand-edited value naming an enormous index must not turn
+     * into an enormous `resize()`, so this never grows to fit anything; it
+     * only ever clamps into whatever size the monitor already is.
      *
-     * Grows to fit app rules first: a monitor starts at {@link MIN_SIZE}
-     * regardless of mode, so a saved rule pointing at workspace 5 would
-     * otherwise collapse to whatever the floor is before the app it predicts
-     * ever gets a chance to reopen there. `activeIndex` alone does not force
-     * growth — it says only where the user was looking last time, not that
-     * anything lives there, and a static-mode restore is finalised by the
-     * unconditional resize to the fixed count right after this call anyway.
+     * That size is `Registry`'s to have gotten right before calling this —
+     * see `_createState()`, which sizes a fixed-mode monitor to its
+     * configured count *first* so a rule within that range clamps to its
+     * real slot rather than to whatever the floor happens to be.
      */
     restore({ activeIndex = 0, apps = {} } = {}) {
-        const appIndices = Object.values(apps).filter(Number.isInteger);
-        const needed = appIndices.length ? Math.max(...appIndices) + 1 : 0;
-        if (needed > this.size)
-            this.resize(needed);
-
         this.activeIndex = clamp(activeIndex, 0, this.size - 1);
 
         this._appRules = new Map(
@@ -500,15 +497,17 @@ export class Registry {
     _createState(connector) {
         const state = new MonitorState(connector, this._dynamic);
 
+        // Fixed mode: size to the configured count *before* restoring, not
+        // after — restore() only clamps, so a saved rule within that count
+        // has to find the real size already in place or it clamps down to
+        // the floor and stays there. Dynamic mode never force-grows — size
+        // is earned by occupancy from here on.
+        if (!this._dynamic)
+            state.resize(this._fixedCount);
+
         const saved = this._saved?.monitors?.[connector];
         if (saved)
             state.restore(saved);
-
-        // Fixed mode: bring a freshly-created (or partially grown-to-fit-saved-
-        // data) state up to the exact configured count, same as always. Dynamic
-        // mode never force-grows — size is earned by occupancy from here on.
-        if (!this._dynamic)
-            state.resize(this._fixedCount);
 
         this._states.set(connector, state);
         return state;

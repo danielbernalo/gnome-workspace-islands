@@ -32,6 +32,14 @@ const ONLY_ON_PRIMARY = 'workspaces-only-on-primary';
 const PAPERWM_UUID = 'paperwm@paperwm.github.com';
 
 /**
+ * The schema only defines `switch-to-1` through `switch-to-8` — the same
+ * ceiling `prefs.js`'s shortcut list assumes. In dynamic mode there is no
+ * setting to read a smaller number from (the static count is irrelevant and
+ * greyed out in prefs), so this is the count to bind up to instead.
+ */
+const MAX_DIRECT_SWITCH_KEYS = 8;
+
+/**
  * How long to wait for the monitor layout to stop moving.
  *
  * `monitors-changed` is not one event. A resume or a DP-MST dock emits it two
@@ -357,6 +365,12 @@ export default class WorkspaceIslands extends Extension {
 
         this._connect(this._settings, 'changed::dynamic-virtual-workspaces', () => {
             this._registry.setDynamic(this._settings.get_boolean('dynamic-virtual-workspaces'));
+
+            // _bindKeys() reads this same setting to decide how many
+            // switch-to-N keys to register, so the toggle needs the same
+            // rebind the virtual-workspaces handler above already does.
+            this._keys.removeAll();
+            this._bindKeys();
             this._afterChange('dynamic workspaces toggled');
         });
     }
@@ -558,12 +572,21 @@ export default class WorkspaceIslands extends Extension {
     }
 
     _bindKeys() {
-        const count = this._settings.get_int('virtual-workspaces');
+        // Dynamic mode has no setting to cap this at — the static count is
+        // irrelevant and greyed out in prefs — so bind up to the schema's own
+        // ceiling instead of whatever the (unrelated) static count is left at.
+        const count = this._settings.get_boolean('dynamic-virtual-workspaces')
+            ? MAX_DIRECT_SWITCH_KEYS
+            : this._settings.get_int('virtual-workspaces');
 
-        // Only up to `count`: the remaining schema keys default to an empty
-        // accelerator list, and registering those just logs noise.
-        for (let i = 1; i <= count; i++)
-            this._keys.add(`switch-to-${i}`, () => this._switchTo(i - 1));
+        // Only where an accelerator is actually set: switch-to-5..8 default to
+        // an empty list, and registering those anyway just logs noise for a
+        // shortcut nobody asked for.
+        for (let i = 1; i <= count; i++) {
+            const name = `switch-to-${i}`;
+            if (this._settings.get_strv(name).length > 0)
+                this._keys.add(name, () => this._switchTo(i - 1));
+        }
 
         this._keys.add('switch-next', () => this._switchRelative(1));
         this._keys.add('switch-prev', () => this._switchRelative(-1));
