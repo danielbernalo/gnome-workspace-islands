@@ -32,6 +32,22 @@ import { stamp, placementIndex } from './placement.js';
  */
 const MIN_SIZE = 2;
 
+/**
+ * Ceiling on the size a *restore* is allowed to ask for.
+ *
+ * Organic growth needs no limit and does not have one: `_growIfNeeded()` adds
+ * a single workspace at a time, driven by a human opening a window. Restoring
+ * is the opposite kind of event — it sizes a monitor straight from a JSON blob
+ * in gsettings whose shape is validated no further than "is this an object",
+ * so a corrupted or hand-edited value naming an enormous index would become an
+ * enormous allocation inside `enable()`, taking the shell with it.
+ *
+ * Far above any arrangement a person would build, far below anything that
+ * costs a frame to allocate. The point is that the number is bounded, not what
+ * the bound is.
+ */
+const MAX_RESTORE_SIZE = 36;
+
 export class MonitorState {
     /**
      * @param {string} connector
@@ -74,18 +90,22 @@ export class MonitorState {
 
     /**
      * Restore a previously saved arrangement. Indices are clamped, not
-     * trusted — `apps` comes straight out of a JSON blob in gsettings, and
-     * nothing about its shape is validated beyond "is this an object". A
-     * corrupted or hand-edited value naming an enormous index must not turn
-     * into an enormous `resize()`, so this never grows to fit anything; it
-     * only ever clamps into whatever size the monitor already is.
+     * trusted — `apps` and `activeIndex` come straight out of a JSON blob in
+     * gsettings, and nothing about their shape is validated beyond "is this an
+     * object".
      *
-     * That size is `Registry`'s to have gotten right before calling this —
-     * see `_createState()`, which sizes a fixed-mode monitor to its
-     * configured count *first* so a rule within that range clamps to its
-     * real slot rather than to whatever the floor happens to be.
+     * Which size they are clamped into depends on the mode, and the two arrive
+     * here from opposite directions. A fixed-mode monitor was sized by
+     * `Registry` before this ran and must stay at exactly that count, so this
+     * only ever clamps. A dynamic one is born at {@link MIN_SIZE} and has
+     * nobody to size it, so it grows to fit what it is about to restore —
+     * within {@link MAX_RESTORE_SIZE}, which is what keeps a hostile number in
+     * that blob from becoming a hostile allocation.
      */
     restore({ activeIndex = 0, apps = {} } = {}) {
+        if (this._dynamic)
+            this._growForRestore(activeIndex, apps);
+
         this.activeIndex = clamp(activeIndex, 0, this.size - 1);
 
         this._appRules = new Map(
@@ -93,6 +113,35 @@ export class MonitorState {
                 .filter(([, index]) => Number.isInteger(index))
                 .map(([key, index]) => [key, clamp(index, 0, this.size - 1)])
         );
+    }
+
+    /**
+     * Grow a dynamic monitor to fit the arrangement it is about to restore.
+     *
+     * `activeIndex` counts here, unlike everywhere else that treats it as a
+     * mere hint about where somebody was looking. In dynamic mode the
+     * workspace you are on is routinely empty — the trailing spare is empty by
+     * definition, and sitting on it is how you get a fresh one — so declining
+     * to grow for it is declining to restore it at all. Left out, every
+     * teardown and rebuild of the extension drops you from wherever you were
+     * onto workspace 2, and a lock screen is a teardown.
+     *
+     * Anything the growth cannot justify is collapsed straight back out by
+     * `reconcileSize()` once `enable()` has adopted the real windows, so this
+     * being generous costs a moment of oversized bookkeeping and nothing else.
+     *
+     * @param {number} activeIndex
+     * @param {Object<string, number>} apps
+     */
+    _growForRestore(activeIndex, apps) {
+        // reduce(), not Math.max(...spread): applying an array of unbounded
+        // length as arguments is its own way to take the shell down, and the
+        // length of this one is decided by whatever is in gsettings.
+        const needed = [activeIndex, ...Object.values(apps)]
+            .filter(Number.isInteger)
+            .reduce((size, index) => Math.max(size, index + 1), MIN_SIZE);
+
+        this.resize(Math.min(needed, MAX_RESTORE_SIZE));
     }
 
     /** Remember where this window's application belongs. */
@@ -498,10 +547,14 @@ export class Registry {
         const state = new MonitorState(connector, this._dynamic);
 
         // Fixed mode: size to the configured count *before* restoring, not
-        // after — restore() only clamps, so a saved rule within that count
-        // has to find the real size already in place or it clamps down to
-        // the floor and stays there. Dynamic mode never force-grows — size
-        // is earned by occupancy from here on.
+        // after — restore() clamps a fixed-mode monitor rather than growing
+        // it, so a saved rule within that count has to find the real size
+        // already in place or it clamps down to the floor and stays there.
+        //
+        // Dynamic mode is deliberately not sized here. It has no configured
+        // count to be sized *to*, and the number it actually needs is a
+        // property of the saved arrangement, which restore() is the one
+        // holding. From there on size is earned by occupancy.
         if (!this._dynamic)
             state.resize(this._fixedCount);
 
