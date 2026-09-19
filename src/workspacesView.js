@@ -45,11 +45,16 @@
  * that paints the window's texture directly rather than cloning a possibly
  * unmapped actor. The thumbnails here use that same layout, one per window, so
  * a parked workspace shows what is actually parked on it.
+ *
+ * The corners needed the same treatment for the same reason: a widget's
+ * border-radius stops at its own background, so the wallpaper is rounded on
+ * the background content, the seam the pages use for theirs.
  */
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
+import Graphene from 'gi://Graphene';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
@@ -69,6 +74,14 @@ const WORKSPACE_SWITCH_TIME = 250;
 
 /** Share of the monitor height the thumbnail strip may take. */
 const THUMBNAILS_HEIGHT_FRACTION = 0.11;
+
+/**
+ * Floor for a thumbnail's corner radius, in logical pixels.
+ *
+ * The theme rounds these at 4px, which reads as almost square on a
+ * whole-monitor preview; the active thumbnail's frame is already drawn at 8px.
+ */
+const THUMBNAIL_MIN_CORNER_RADIUS = 8;
 
 /**
  * The tag for the page currently being constructed.
@@ -123,6 +136,12 @@ class IslandsThumbnail extends St.Widget {
             clip_to_allocation: true,
         });
 
+        // The theme's grey body exists for GNOME's own thumbnails, which are
+        // bare window clones. Here the wallpaper is the whole shape, and its
+        // rounded corners would otherwise uncover that body as a grey
+        // crescent — with the theme's smaller, mismatched radius on it.
+        this.set_style('background-color: transparent;');
+
         this._monitor = monitor;
         this._state = state;
         this._index = index;
@@ -144,6 +163,10 @@ class IslandsThumbnail extends St.Widget {
             monitorIndex: monitor.index,
             controlPosition: false,
         });
+
+        // The rounded clip lives on the background actor, and a wallpaper
+        // change swaps that actor underneath us, so it has to be re-applied.
+        this._backgroundManager.connect('changed', () => this._roundBackground());
 
         this._previews = [];
         this.setWindows(state.windowsOn(index));
@@ -223,6 +246,52 @@ class IslandsThumbnail extends St.Widget {
         this._contents.set_scale(
             width / this._monitor.width, height / this._monitor.height);
         this._contents.allocate_preferred_size(0, 0);
+
+        this._paintedWidth = width;
+        this._roundBackground();
+    }
+
+    /**
+     * Round the wallpaper to the thumbnail's corners.
+     *
+     * `clip_to_allocation` is a rectangle, and the theme's border-radius only
+     * shapes the widget's own background — which the wallpaper paints over.
+     * So the corners have to be cut on the background content, the same seam
+     * GNOME's workspace pages use for theirs.
+     *
+     * That clip is expressed in the background's own space — the monitor, not
+     * the thumbnail — so the radius is scaled by however much the thumbnail
+     * shrinks a monitor. Unscaled it would round a corner far too small to
+     * see, which is how this started out square. The theme's own radius is a
+     * floor here, not the whole answer: at this size it reads as square.
+     */
+    _roundBackground() {
+        const content = this._backgroundManager?.backgroundActor?.content;
+        if (!content || !this._paintedWidth)
+            return;
+
+        if (this._roundedContent === content &&
+            this._roundedWidth === this._paintedWidth) {
+            return;
+        }
+
+        const radius = Math.max(
+            this.get_theme_node().get_border_radius(St.Corner.TOPLEFT),
+            THUMBNAIL_MIN_CORNER_RADIUS) * this._monitor.width / this._paintedWidth;
+
+        if (!this._clipBounds) {
+            this._clipBounds = new Graphene.Rect();
+            this._clipBounds.origin.x = 0;
+            this._clipBounds.origin.y = 0;
+            this._clipBounds.size.width = this._monitor.width;
+            this._clipBounds.size.height = this._monitor.height;
+        }
+
+        this._roundedContent = content;
+        this._roundedWidth = this._paintedWidth;
+
+        content.rounded_clip_radius = radius;
+        content.set_rounded_clip_bounds(this._clipBounds);
     }
 
     _onDestroy() {
