@@ -427,6 +427,7 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         });
 
         this._updateWorkspacesState();
+        this._updateWorkspaceMode();
     }
 
     /**
@@ -556,6 +557,15 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         const { value } = this._workspace.stateAdjustment;
         for (const page of this._pages ?? [])
             page.stateAdjustment.value = value;
+
+        // Fade the strip with the overview instead of popping it in at full
+        // strength on the first frame: it arrives as the window picker opens
+        // and is gone by the time the overview is closed. `value` is the
+        // overview transition already clamped to [0, 1] — the same quantity
+        // the strip's reserved space is taken from in vfunc_allocate — so a
+        // swipe fades it under the fingers too.
+        if (this._thumbnails)
+            this._thumbnails.opacity = Math.round(255 * value);
     }
 
     vfunc_allocate(box) {
