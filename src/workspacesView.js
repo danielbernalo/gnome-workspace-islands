@@ -579,9 +579,24 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         stripBox.set_size(width, stripHeight);
         this._thumbnails.allocate(stripBox);
 
+        // The strip only takes room as the overview opens. At the hidden end
+        // of the transition the pages have to fill this box exactly: that is
+        // the endpoint every window preview is animated from or to, and it is
+        // where the real window is. Subtracting the strip there as well would
+        // leave every preview a strip-height away from its window at the
+        // start of enter and the end of leave — the animation jumping.
+        //
+        // GNOME's own SecondaryMonitorDisplay does the same thing, by
+        // subtracting thumbnails only from its open states' boxes. The value
+        // read here is the overview's own transition — 0 hidden, 1 window
+        // picker — which is exactly what ExtraWorkspaceView clamps the pages'
+        // window animation to, so reservation and previews move in step.
+        const openness = Math.min(Math.max(this._overviewAdjustment.value, 0), 1);
+        const reserved = Math.round(stripHeight * openness);
+
         const pagesBox = new Clutter.ActorBox();
-        pagesBox.set_origin(0, stripHeight);
-        pagesBox.set_size(width, height - stripHeight);
+        pagesBox.set_origin(0, reserved);
+        pagesBox.set_size(width, height - reserved);
 
         const spacing = this._getSpacing(pagesBox);
         const [pagesWidth, pagesHeight] = pagesBox.get_size();
