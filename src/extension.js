@@ -120,7 +120,7 @@ export default class WorkspaceIslands extends Extension {
                 this._indicator?.setPreview(state, value),
         });
 
-        AltTabFilter.patch();
+        AltTabFilter.patch({ settings: this._settings });
 
         // Super + wheel on the desktop. The overview has its own scroll seam
         // and already worked; this is the one outside it.
