@@ -51,6 +51,19 @@
       </description>
     </key>
 
+    <key name="alt-tab-mru-order" type="b">
+      <default>true</default>
+      <summary>Sort the Alt+Tab list by most recent use</summary>
+      <description>
+        GNOME sorts an app whose windows are all minimized behind every app
+        that still has a window on screen, and parking a window on an inactive
+        virtual workspace minimizes it — so without this the app you just left
+        drops to the end of the Alt+Tab list. With it on, apps are ordered by
+        most recent use whatever workspace they are on; off leaves GNOME's own
+        order alone.
+      </description>
+    </key>
+
     <key name="debug-logging" type="b">
       <default>false</default>
       <summary>Log state transitions to the journal</summary>
