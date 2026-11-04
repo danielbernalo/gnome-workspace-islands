@@ -81,11 +81,7 @@ export default class WorkspaceIslands extends Extension {
         this._signals = [];
         this._settleId = 0;
         this._layoutChanging = false;
-
-        // Windows under a titlebar drag or a keyboard move. See _trackWindow.
         this._grabbed = new Set();
-
-        // Overview drops still travelling to their monitor. See _dropWindow.
         this._pendingDrops = new Map();
         this._keys = new Keybindings(this._settings);
 
@@ -532,12 +528,6 @@ export default class WorkspaceIslands extends Extension {
         if (!state)
             return;
 
-        // A window the user is carrying onto this monitor lands where they are
-        // looking. The app rule is a guess about where a *new* window should
-        // open; applied here, it minimized the window out from under the
-        // pointer halfway through a titlebar drag, and Mutter was left holding
-        // a grab on something no longer on screen. Focus covers the keyboard
-        // version of the same move, which takes no grab.
         const moving = !trustPlacement &&
             (this._grabbed.has(window) || window.has_focus());
 
@@ -595,10 +585,6 @@ export default class WorkspaceIslands extends Extension {
         this._log(`following un-minimize to virtual workspace ${index + 1} ` +
             `on ${state.connector}`);
 
-        // The unminimize effect has not started yet — Mutter runs it once it
-        // recomputes what is showing, after this signal. Left alone it zooms
-        // the window in underneath the slide, and the window is still growing
-        // when the cover comes down. The slide is the transition here.
         if (this._settings.get_boolean('switch-animation'))
             skipEffect(window);
 
@@ -665,8 +651,6 @@ export default class WorkspaceIslands extends Extension {
      *   shortcuts wrap, and a wrap has a direction its indices do not show
      */
     _requestSwitch(state, index, forward) {
-        // Against where a running slide is headed, not where it started: going
-        // back to the workspace being left is a real request mid-slide.
         const current = this._slide?.targetFor(state) ?? state.activeIndex;
         if (index < 0 || index >= state.size || index === current)
             return;
@@ -722,8 +706,6 @@ export default class WorkspaceIslands extends Extension {
             return;
         }
 
-        // From the slide's destination, so "next" pressed twice during one
-        // slide goes two workspaces rather than asking for the same one again.
         const from = this._slide?.targetFor(state) ?? state.activeIndex;
         const count = state.size;
         this._switchTo((from + delta + count) % count, delta > 0);
@@ -733,19 +715,10 @@ export default class WorkspaceIslands extends Extension {
      * Place a window dropped on a virtual workspace in the overview.
      *
      * Two cases. A window already on this monitor is just re-filed. A window
-     * dragged in from another monitor has to be moved there first, and that
-     * move is not synchronous on Wayland: `move_to_monitor()` returns with the
-     * window still on its old monitor, and `window-left-monitor` and
-     * `window-entered-monitor` arrive later. Filing it here, before then, had
-     * the late left-monitor untrack it again — the note already named this
-     * connector — and entered-monitor re-adopt it onto the active workspace
-     * while it was still minimized. The window vanished.
-     *
-     * So the drop is parked, and applied when the window actually arrives.
+     * dragged in from another monitor has to be moved there first.
      */
     _dropWindow(state, index, window, monitorIndex) {
         if (window.get_monitor() !== monitorIndex) {
-            // Before the move: on X11 the signal can fire inside the call.
             this._pendingDrops.set(window, { monitorIndex, index });
             window.move_to_monitor(monitorIndex);
             return;
@@ -761,7 +734,6 @@ export default class WorkspaceIslands extends Extension {
             `of ${state.connector}`);
     }
 
-    /** @returns {boolean} true when the window was a drop, now filed */
     _applyPendingDrop(window) {
         const drop = this._pendingDrops.get(window);
         if (!drop || window.get_monitor() !== drop.monitorIndex)

@@ -221,12 +221,6 @@ const Slide = GObject.registerClass({
         this._monitor = monitor;
         this.add_constraint(new Layout.MonitorConstraint({ index: monitor.index }));
 
-        // Opaque on its own, whatever the theme says. The gap between pages
-        // was left to `.workspace-animation`, and Blur my Shell makes that
-        // transparent — it puts its own blurred wallpaper behind the shell's
-        // switch, but knows nothing about this one. The gap then showed the
-        // real windows still standing behind the cover. A wallpaper that
-        // stays put fills it, and anything the pages do not.
         this.add_child(new Page(monitor));
 
         this._container = new Clutter.Actor();
@@ -463,21 +457,13 @@ export class SlideController {
         if (!this._settings?.get_boolean('switch-animation'))
             return false;
 
-        // Never answer "no slide" while one is running. The caller would then
-        // commit on its own, with minimize animations, underneath the cover —
-        // and the running slide would land afterwards and commit its own
-        // target over the top. Two quick presses used to end on the first
-        // workspace, with every window zooming in and out on the way.
         if (this._session) {
-            // A finger is still on the touchpad, and it owns the monitor.
             if (this._claimed)
                 return true;
 
             if (this._session.state === state && this._retarget(index, forward))
                 return true;
 
-            // Another monitor's slide, or one that could not be extended:
-            // land it now, and start from where it would have ended.
             this._complete();
         }
 
@@ -499,13 +485,6 @@ export class SlideController {
         return true;
     }
 
-    /**
-     * Where the slide in flight on this monitor is headed, or null.
-     *
-     * Relative shortcuts count from here rather than from activeIndex, which
-     * only moves when a slide lands. Otherwise pressing "next" twice during
-     * one slide asks for the same workspace twice.
-     */
     targetFor(state) {
         const session = this._session;
         if (!session || session.state !== state || this._claimed)
@@ -525,17 +504,6 @@ export class SlideController {
             });
     }
 
-    /**
-     * Send the running slide somewhere else, from wherever it is now.
-     *
-     * A workspace the slide already holds is just a new destination. One it
-     * does not hold is added at the end it is travelling towards, and the
-     * slide rebuilt around it in the same synchronous block — the old cover
-     * comes down in the same frame the new one goes up, so nothing is drawn
-     * in between. The windows already revealed stay revealed.
-     *
-     * @returns {boolean} false when the slide could not be rebuilt
-     */
     _retarget(index, forward) {
         const session = this._session;
         const { state } = session;
@@ -561,13 +529,11 @@ export class SlideController {
             session.revealed = [...new Set([...session.revealed, ...built.revealed])];
         }
 
-        // A keypress, so it lands with the OSD like any other.
         session.gesture = false;
         this._slideTo(session, index);
         return true;
     }
 
-    /** Land the running slide on its target right now, without animating. */
     _complete() {
         const session = this._session;
         if (!session)
@@ -616,7 +582,6 @@ export class SlideController {
         return this._session;
     }
 
-    /** The cover and its pages, on stage, with the neighbours revealed. */
     _build(state, indices) {
         const monitorIndex = monitorIndexOf(state.connector);
         if (monitorIndex < 0)
@@ -730,11 +695,6 @@ export class SlideController {
      * entered. With three pages prepared, the one that was neither is still on
      * screen and still tagged hidden — it has to be minimized explicitly, or a
      * swipe leaves a workspace leaking onto the monitor.
-     *
-     * Only windows the state still holds. One that left the monitor during
-     * the slide — dragged off, or moved by a shortcut — belongs to another
-     * monitor now, and minimizing it there would make it vanish for no
-     * visible reason.
      */
     _settle(session, index) {
         for (const window of session.revealed) {

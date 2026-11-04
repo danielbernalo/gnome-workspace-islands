@@ -237,10 +237,6 @@ export class MonitorState {
      *   and honouring an old note would make the window they are holding
      *   vanish onto some workspace they are not looking at. Every other caller
      *   is recovering from churn, where the note is the whole point.
-     * @param {boolean} [options.trustRules] consult the app rule. False for a
-     *   window the user is moving onto this monitor themselves, for the same
-     *   reason as above: the rule is a guess for where a new window should
-     *   open, not a reason to hide one that is being carried here.
      * @returns {number} the index it was assigned to, or -1 if already tracked
      */
     track(window, index = -1, { trustPlacement = true, trustRules = true } = {}) {

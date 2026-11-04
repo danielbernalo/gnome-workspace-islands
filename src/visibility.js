@@ -112,10 +112,6 @@ export function reveal(window) {
  *
  * Public API — `_shouldAnimateActor` consults the same set — so no injection is
  * needed to get an instant state change.
- *
- * Also for a state change someone else already made: Mutter only runs the
- * effect once it recomputes what is showing, which is after `notify::minimized`
- * has been delivered.
  */
 export function skipEffect(window) {
     const actor = window.get_compositor_private();
