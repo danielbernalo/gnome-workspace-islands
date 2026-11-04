@@ -70,6 +70,9 @@ const WORKSPACE_SWITCH_TIME = 250;
 /** Share of the monitor height the thumbnail strip may take. */
 const THUMBNAILS_HEIGHT_FRACTION = 0.11;
 
+/** Gap between the thumbnail strip and the pages, in logical pixels. */
+const THUMBNAILS_GAP = 16;
+
 /**
  * The tag for the page currently being constructed.
  *
@@ -418,6 +421,15 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         // rebuild, just triggered reactively instead of from _drop().
         this._unsubscribeSize = state.onSizeChanged(() => this._scheduleRefresh());
 
+        this._refreshAfterDrag = false;
+        Main.overview.connectObject('window-drag-end', () => {
+            if (!this._refreshAfterDrag)
+                return;
+
+            this._refreshAfterDrag = false;
+            this._scheduleRefresh();
+        }, this);
+
         this.connect('destroy', () => {
             if (this._refreshId) {
                 GLib.Source.remove(this._refreshId);
@@ -440,7 +452,17 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
      */
     _drop(index, window, monitorIndex) {
         this._onDrop(index, window, monitorIndex);
+        this._releaseDraggedPreview(window);
         this._scheduleRefresh();
+    }
+
+    _releaseDraggedPreview(window) {
+        const index = this._state.indexOf(window);
+
+        for (const [position, page] of this._pages.entries()) {
+            if (position !== index && page.containsMetaWindow(window))
+                page._doRemoveWindow(window);
+        }
     }
 
     /**
@@ -454,6 +476,12 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
 
         this._refreshId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
             this._refreshId = 0;
+
+            if (this._inDrag) {
+                this._refreshAfterDrag = true;
+                return GLib.SOURCE_REMOVE;
+            }
+
             this._rebuildPages();
             this._thumbnails.rebuild();
             return GLib.SOURCE_REMOVE;
@@ -490,6 +518,8 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         // another.
         this._scrollAdjustment.upper = this._state.size;
         this._scrollAdjustment.value = this._state.activeIndex;
+
+        this._updateWorkspaceMode();
 
         this._updateWorkspacesState();
         this.queue_relayout();
@@ -579,9 +609,12 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         stripBox.set_size(width, stripHeight);
         this._thumbnails.allocate(stripBox);
 
+        const { scaleFactor } = St.ThemeContext.get_for_stage(global.stage);
+        const reserved = stripHeight + Math.round(THUMBNAILS_GAP * scaleFactor);
+
         const pagesBox = new Clutter.ActorBox();
-        pagesBox.set_origin(0, stripHeight);
-        pagesBox.set_size(width, height - stripHeight);
+        pagesBox.set_origin(0, reserved);
+        pagesBox.set_size(width, height - reserved);
 
         const spacing = this._getSpacing(pagesBox);
         const [pagesWidth, pagesHeight] = pagesBox.get_size();

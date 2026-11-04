@@ -113,7 +113,7 @@ export function reveal(window) {
  * Public API — `_shouldAnimateActor` consults the same set — so no injection is
  * needed to get an instant state change.
  */
-function skipEffect(window) {
+export function skipEffect(window) {
     const actor = window.get_compositor_private();
     if (actor)
         Main.wm.skipNextEffect(actor);

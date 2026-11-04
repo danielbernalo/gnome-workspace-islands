@@ -22,7 +22,7 @@ import { Persistence } from './persistence.js';
 import { Indicator } from './indicator.js';
 import { SwitcherPopup } from './switcherPopup.js';
 import { SlideController } from './slide.js';
-import { isApplying, isHiddenByUs, forget } from './visibility.js';
+import { isApplying, isHiddenByUs, forget, skipEffect } from './visibility.js';
 import * as AltTabFilter from './altTab.js';
 import * as OverviewFilter from './overview.js';
 import * as ScrollFilter from './scroll.js';
@@ -81,6 +81,8 @@ export default class WorkspaceIslands extends Extension {
         this._signals = [];
         this._settleId = 0;
         this._layoutChanging = false;
+        this._grabbed = new Set();
+        this._pendingDrops = new Map();
         this._keys = new Keybindings(this._settings);
 
         this._checkPreconditions();
@@ -203,6 +205,8 @@ export default class WorkspaceIslands extends Extension {
                 window.disconnect(id);
         }
         this._windowSignals = null;
+        this._grabbed = null;
+        this._pendingDrops = null;
 
         for (const [object, id] of this._signals ?? [])
             object.disconnect(id);
@@ -284,7 +288,20 @@ export default class WorkspaceIslands extends Extension {
         // which is the exact opposite: nobody stated anything, and the note is
         // the only record of where these windows were. Hence the flag.
         this._connect(global.display, 'window-entered-monitor', (_d, _index, window) => {
+            if (this._applyPendingDrop(window))
+                return;
+
             this._trackWindow(window, { trustPlacement: this._layoutSettling });
+        });
+
+        this._connect(global.display, 'grab-op-begin', (_d, window) => {
+            if (window)
+                this._grabbed.add(window);
+        });
+
+        this._connect(global.display, 'grab-op-end', (_d, window) => {
+            if (window)
+                this._grabbed.delete(window);
         });
 
         // Untracked by the note, not by forWindow(). Two reasons, and both bite:
@@ -506,12 +523,15 @@ export default class WorkspaceIslands extends Extension {
         return moved;
     }
 
-    _trackWindow(window, { trustPlacement = true } = {}) {
+    _trackWindow(window, { trustPlacement = true, index = -1 } = {}) {
         const state = this._registry.forWindow(window);
         if (!state)
             return;
 
-        state.track(window, -1, { trustPlacement });
+        const moving = !trustPlacement &&
+            (this._grabbed.has(window) || window.has_focus());
+
+        state.track(window, index, { trustPlacement, trustRules: !moving });
         this._indicator?.sync();
 
         if (this._windowSignals.has(window))
@@ -524,6 +544,8 @@ export default class WorkspaceIslands extends Extension {
                 // group left holding a dead window would minimize() it on the
                 // next reapply().
                 this._registry?.untrackEverywhere(window);
+                this._grabbed?.delete(window);
+                this._pendingDrops?.delete(window);
                 this._disconnectWindow(window);
                 this._indicator?.sync();
             }),
@@ -562,6 +584,10 @@ export default class WorkspaceIslands extends Extension {
 
         this._log(`following un-minimize to virtual workspace ${index + 1} ` +
             `on ${state.connector}`);
+
+        if (this._settings.get_boolean('switch-animation'))
+            skipEffect(window);
+
         this._requestSwitch(state, index);
     }
 
@@ -625,7 +651,8 @@ export default class WorkspaceIslands extends Extension {
      *   shortcuts wrap, and a wrap has a direction its indices do not show
      */
     _requestSwitch(state, index, forward) {
-        if (index < 0 || index >= state.size || index === state.activeIndex)
+        const current = this._slide?.targetFor(state) ?? state.activeIndex;
+        if (index < 0 || index >= state.size || index === current)
             return;
 
         if (this._slide?.animateSwitch(state, index, forward))
@@ -679,22 +706,23 @@ export default class WorkspaceIslands extends Extension {
             return;
         }
 
+        const from = this._slide?.targetFor(state) ?? state.activeIndex;
         const count = state.size;
-        this._switchTo((state.activeIndex + delta + count) % count, delta > 0);
+        this._switchTo((from + delta + count) % count, delta > 0);
     }
 
     /**
      * Place a window dropped on a virtual workspace in the overview.
      *
      * Two cases. A window already on this monitor is just re-filed. A window
-     * dragged in from another monitor has to be moved there first, and Mutter
-     * announces that with `window-entered-monitor`, which adopts it onto
-     * whatever the app rule or the active workspace says — so the reassignment
-     * has to come after, not instead.
+     * dragged in from another monitor has to be moved there first.
      */
     _dropWindow(state, index, window, monitorIndex) {
-        if (window.get_monitor() !== monitorIndex)
+        if (window.get_monitor() !== monitorIndex) {
+            this._pendingDrops.set(window, { monitorIndex, index });
             window.move_to_monitor(monitorIndex);
+            return;
+        }
 
         if (state.indexOf(window) === -1)
             state.track(window, index);
@@ -704,6 +732,24 @@ export default class WorkspaceIslands extends Extension {
         this._afterChange(
             `dropped "${window.get_title()}" on virtual workspace ${index + 1} ` +
             `of ${state.connector}`);
+    }
+
+    _applyPendingDrop(window) {
+        const drop = this._pendingDrops.get(window);
+        if (!drop || window.get_monitor() !== drop.monitorIndex)
+            return false;
+
+        this._pendingDrops.delete(window);
+
+        const state = this._registry.forWindow(window);
+        if (!state)
+            return false;
+
+        this._trackWindow(window, { trustPlacement: false, index: drop.index });
+        this._afterChange(
+            `dropped "${window.get_title()}" on virtual workspace ` +
+            `${state.indexOf(window) + 1} of ${state.connector}`);
+        return true;
     }
 
     _moveFocused(delta) {
