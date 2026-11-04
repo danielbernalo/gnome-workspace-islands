@@ -221,6 +221,14 @@ const Slide = GObject.registerClass({
         this._monitor = monitor;
         this.add_constraint(new Layout.MonitorConstraint({ index: monitor.index }));
 
+        // Opaque on its own, whatever the theme says. The gap between pages
+        // was left to `.workspace-animation`, and Blur my Shell makes that
+        // transparent — it puts its own blurred wallpaper behind the shell's
+        // switch, but knows nothing about this one. The gap then showed the
+        // real windows still standing behind the cover. A wallpaper that
+        // stays put fills it, and anything the pages do not.
+        this.add_child(new Page(monitor));
+
         this._container = new Clutter.Actor();
         this.add_child(this._container);
 
