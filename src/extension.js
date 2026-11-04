@@ -22,7 +22,7 @@ import { Persistence } from './persistence.js';
 import { Indicator } from './indicator.js';
 import { SwitcherPopup } from './switcherPopup.js';
 import { SlideController } from './slide.js';
-import { isApplying, isHiddenByUs, forget } from './visibility.js';
+import { isApplying, isHiddenByUs, forget, skipEffect } from './visibility.js';
 import * as AltTabFilter from './altTab.js';
 import * as OverviewFilter from './overview.js';
 import * as ScrollFilter from './scroll.js';
@@ -81,6 +81,12 @@ export default class WorkspaceIslands extends Extension {
         this._signals = [];
         this._settleId = 0;
         this._layoutChanging = false;
+
+        // Windows under a titlebar drag or a keyboard move. See _trackWindow.
+        this._grabbed = new Set();
+
+        // Overview drops still travelling to their monitor. See _dropWindow.
+        this._pendingDrops = new Map();
         this._keys = new Keybindings(this._settings);
 
         this._checkPreconditions();
@@ -203,6 +209,8 @@ export default class WorkspaceIslands extends Extension {
                 window.disconnect(id);
         }
         this._windowSignals = null;
+        this._grabbed = null;
+        this._pendingDrops = null;
 
         for (const [object, id] of this._signals ?? [])
             object.disconnect(id);
@@ -284,7 +292,20 @@ export default class WorkspaceIslands extends Extension {
         // which is the exact opposite: nobody stated anything, and the note is
         // the only record of where these windows were. Hence the flag.
         this._connect(global.display, 'window-entered-monitor', (_d, _index, window) => {
+            if (this._applyPendingDrop(window))
+                return;
+
             this._trackWindow(window, { trustPlacement: this._layoutSettling });
+        });
+
+        this._connect(global.display, 'grab-op-begin', (_d, window) => {
+            if (window)
+                this._grabbed.add(window);
+        });
+
+        this._connect(global.display, 'grab-op-end', (_d, window) => {
+            if (window)
+                this._grabbed.delete(window);
         });
 
         // Untracked by the note, not by forWindow(). Two reasons, and both bite:
@@ -506,12 +527,21 @@ export default class WorkspaceIslands extends Extension {
         return moved;
     }
 
-    _trackWindow(window, { trustPlacement = true } = {}) {
+    _trackWindow(window, { trustPlacement = true, index = -1 } = {}) {
         const state = this._registry.forWindow(window);
         if (!state)
             return;
 
-        state.track(window, -1, { trustPlacement });
+        // A window the user is carrying onto this monitor lands where they are
+        // looking. The app rule is a guess about where a *new* window should
+        // open; applied here, it minimized the window out from under the
+        // pointer halfway through a titlebar drag, and Mutter was left holding
+        // a grab on something no longer on screen. Focus covers the keyboard
+        // version of the same move, which takes no grab.
+        const moving = !trustPlacement &&
+            (this._grabbed.has(window) || window.has_focus());
+
+        state.track(window, index, { trustPlacement, trustRules: !moving });
         this._indicator?.sync();
 
         if (this._windowSignals.has(window))
@@ -524,6 +554,8 @@ export default class WorkspaceIslands extends Extension {
                 // group left holding a dead window would minimize() it on the
                 // next reapply().
                 this._registry?.untrackEverywhere(window);
+                this._grabbed?.delete(window);
+                this._pendingDrops?.delete(window);
                 this._disconnectWindow(window);
                 this._indicator?.sync();
             }),
@@ -562,6 +594,14 @@ export default class WorkspaceIslands extends Extension {
 
         this._log(`following un-minimize to virtual workspace ${index + 1} ` +
             `on ${state.connector}`);
+
+        // The unminimize effect has not started yet — Mutter runs it once it
+        // recomputes what is showing, after this signal. Left alone it zooms
+        // the window in underneath the slide, and the window is still growing
+        // when the cover comes down. The slide is the transition here.
+        if (this._settings.get_boolean('switch-animation'))
+            skipEffect(window);
+
         this._requestSwitch(state, index);
     }
 
@@ -625,7 +665,10 @@ export default class WorkspaceIslands extends Extension {
      *   shortcuts wrap, and a wrap has a direction its indices do not show
      */
     _requestSwitch(state, index, forward) {
-        if (index < 0 || index >= state.size || index === state.activeIndex)
+        // Against where a running slide is headed, not where it started: going
+        // back to the workspace being left is a real request mid-slide.
+        const current = this._slide?.targetFor(state) ?? state.activeIndex;
+        if (index < 0 || index >= state.size || index === current)
             return;
 
         if (this._slide?.animateSwitch(state, index, forward))
@@ -679,22 +722,34 @@ export default class WorkspaceIslands extends Extension {
             return;
         }
 
+        // From the slide's destination, so "next" pressed twice during one
+        // slide goes two workspaces rather than asking for the same one again.
+        const from = this._slide?.targetFor(state) ?? state.activeIndex;
         const count = state.size;
-        this._switchTo((state.activeIndex + delta + count) % count, delta > 0);
+        this._switchTo((from + delta + count) % count, delta > 0);
     }
 
     /**
      * Place a window dropped on a virtual workspace in the overview.
      *
      * Two cases. A window already on this monitor is just re-filed. A window
-     * dragged in from another monitor has to be moved there first, and Mutter
-     * announces that with `window-entered-monitor`, which adopts it onto
-     * whatever the app rule or the active workspace says — so the reassignment
-     * has to come after, not instead.
+     * dragged in from another monitor has to be moved there first, and that
+     * move is not synchronous on Wayland: `move_to_monitor()` returns with the
+     * window still on its old monitor, and `window-left-monitor` and
+     * `window-entered-monitor` arrive later. Filing it here, before then, had
+     * the late left-monitor untrack it again — the note already named this
+     * connector — and entered-monitor re-adopt it onto the active workspace
+     * while it was still minimized. The window vanished.
+     *
+     * So the drop is parked, and applied when the window actually arrives.
      */
     _dropWindow(state, index, window, monitorIndex) {
-        if (window.get_monitor() !== monitorIndex)
+        if (window.get_monitor() !== monitorIndex) {
+            // Before the move: on X11 the signal can fire inside the call.
+            this._pendingDrops.set(window, { monitorIndex, index });
             window.move_to_monitor(monitorIndex);
+            return;
+        }
 
         if (state.indexOf(window) === -1)
             state.track(window, index);
@@ -704,6 +759,25 @@ export default class WorkspaceIslands extends Extension {
         this._afterChange(
             `dropped "${window.get_title()}" on virtual workspace ${index + 1} ` +
             `of ${state.connector}`);
+    }
+
+    /** @returns {boolean} true when the window was a drop, now filed */
+    _applyPendingDrop(window) {
+        const drop = this._pendingDrops.get(window);
+        if (!drop || window.get_monitor() !== drop.monitorIndex)
+            return false;
+
+        this._pendingDrops.delete(window);
+
+        const state = this._registry.forWindow(window);
+        if (!state)
+            return false;
+
+        this._trackWindow(window, { trustPlacement: false, index: drop.index });
+        this._afterChange(
+            `dropped "${window.get_title()}" on virtual workspace ` +
+            `${state.indexOf(window) + 1} of ${state.connector}`);
+        return true;
     }
 
     _moveFocused(delta) {

@@ -455,10 +455,23 @@ export class SlideController {
         if (!this._settings?.get_boolean('switch-animation'))
             return false;
 
-        // A gesture in flight owns the monitor. Let it finish rather than
-        // stacking a second cover over the first.
-        if (this._session)
-            return false;
+        // Never answer "no slide" while one is running. The caller would then
+        // commit on its own, with minimize animations, underneath the cover —
+        // and the running slide would land afterwards and commit its own
+        // target over the top. Two quick presses used to end on the first
+        // workspace, with every window zooming in and out on the way.
+        if (this._session) {
+            // A finger is still on the touchpad, and it owns the monitor.
+            if (this._claimed)
+                return true;
+
+            if (this._session.state === state && this._retarget(index, forward))
+                return true;
+
+            // Another monitor's slide, or one that could not be extended:
+            // land it now, and start from where it would have ended.
+            this._complete();
+        }
 
         // Page order is direction, and the shortcuts wrap where native
         // workspaces do not. Going forward from the last workspace to the first
@@ -474,14 +487,90 @@ export class SlideController {
         if (!session)
             return false;
 
+        this._slideTo(session, index);
+        return true;
+    }
+
+    /**
+     * Where the slide in flight on this monitor is headed, or null.
+     *
+     * Relative shortcuts count from here rather than from activeIndex, which
+     * only moves when a slide lands. Otherwise pressing "next" twice during
+     * one slide asks for the same workspace twice.
+     */
+    targetFor(state) {
+        const session = this._session;
+        if (!session || session.state !== state || this._claimed)
+            return null;
+
+        return session.target;
+    }
+
+    _slideTo(session, index) {
+        session.target = index;
+
         session.slide.ease_property(
             'progress', session.slide.progressFor(index), {
                 duration: WINDOW_ANIMATION_TIME,
                 mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
                 onComplete: () => this._finish(index),
             });
+    }
 
+    /**
+     * Send the running slide somewhere else, from wherever it is now.
+     *
+     * A workspace the slide already holds is just a new destination. One it
+     * does not hold is added at the end it is travelling towards, and the
+     * slide rebuilt around it in the same synchronous block — the old cover
+     * comes down in the same frame the new one goes up, so nothing is drawn
+     * in between. The windows already revealed stay revealed.
+     *
+     * @returns {boolean} false when the slide could not be rebuilt
+     */
+    _retarget(index, forward) {
+        const session = this._session;
+        const { state } = session;
+        let { slide } = session;
+
+        if (index < 0 || index >= state.size)
+            return false;
+
+        if (slide.progressFor(index) === -1) {
+            const indices = slide.indices;
+            const ahead = forward ?? index > slide.indexAt(slide.progress);
+            const pages = ahead ? [...indices, index] : [index, ...indices];
+
+            const built = this._build(state, pages);
+            if (!built)
+                return false;
+
+            built.slide.progress = slide.progress + (ahead ? 0 : 1);
+            slide.destroy();
+
+            slide = built.slide;
+            session.slide = slide;
+            session.revealed = [...new Set([...session.revealed, ...built.revealed])];
+        }
+
+        // A keypress, so it lands with the OSD like any other.
+        session.gesture = false;
+        this._slideTo(session, index);
         return true;
+    }
+
+    /** Land the running slide on its target right now, without animating. */
+    _complete() {
+        const session = this._session;
+        if (!session)
+            return;
+
+        session.slide.remove_all_transitions();
+
+        if (session.target === null)
+            this._cancel();
+        else
+            this._finish(session.target);
     }
 
     destroy() {
@@ -504,6 +593,23 @@ export class SlideController {
      * wallpaper, windows un-minimized but not yet cloned — are never drawn.
      */
     _prepare(state, indices, gesture) {
+        const built = this._build(state, indices);
+        if (!built)
+            return null;
+
+        // A fullscreen window on this monitor would otherwise have the
+        // compositor bypassing the stage, and the slide would never be drawn.
+        global.compositor.disable_unredirect();
+
+        const { slide, revealed } = built;
+        slide.progress = slide.progressFor(state.activeIndex);
+
+        this._session = { state, slide, revealed, gesture, target: null };
+        return this._session;
+    }
+
+    /** The cover and its pages, on stage, with the neighbours revealed. */
+    _build(state, indices) {
         const monitorIndex = monitorIndexOf(state.connector);
         if (monitorIndex < 0)
             return null;
@@ -524,10 +630,6 @@ export class SlideController {
         const slide = new Slide(monitor, pages);
         Main.uiGroup.insert_child_above(slide, global.window_group);
 
-        // A fullscreen window on this monitor would otherwise have the
-        // compositor bypassing the stage, and the slide would never be drawn.
-        global.compositor.disable_unredirect();
-
         // The page under the cover goes first, so the screen keeps looking
         // exactly like the screen.
         slide.fill(state.activeIndex, state.windowsOn(state.activeIndex));
@@ -546,10 +648,7 @@ export class SlideController {
             slide.fill(index, windows);
         }
 
-        slide.progress = slide.progressFor(state.activeIndex);
-
-        this._session = { state, slide, revealed, gesture };
-        return this._session;
+        return { slide, revealed };
     }
 
     /**
@@ -623,10 +722,16 @@ export class SlideController {
      * entered. With three pages prepared, the one that was neither is still on
      * screen and still tagged hidden — it has to be minimized explicitly, or a
      * swipe leaves a workspace leaking onto the monitor.
+     *
+     * Only windows the state still holds. One that left the monitor during
+     * the slide — dragged off, or moved by a shortcut — belongs to another
+     * monitor now, and minimizing it there would make it vanish for no
+     * visible reason.
      */
     _settle(session, index) {
         for (const window of session.revealed) {
-            if (session.state.indexOf(window) !== index)
+            const at = session.state.indexOf(window);
+            if (at !== -1 && at !== index)
                 hide(window, { animate: false });
         }
     }
@@ -710,6 +815,7 @@ export class SlideController {
         this._claimed = false;
 
         const index = session.slide.indexAt(endProgress);
+        session.target = index;
 
         // duration can be 0, which SwipeTracker documents as "finish instantly".
         session.slide.ease_property('progress', endProgress, {

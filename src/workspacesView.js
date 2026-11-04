@@ -418,6 +418,16 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         // rebuild, just triggered reactively instead of from _drop().
         this._unsubscribeSize = state.onSizeChanged(() => this._scheduleRefresh());
 
+        // Connected after the base class, so its `_inDrag` is already false.
+        this._refreshAfterDrag = false;
+        Main.overview.connectObject('window-drag-end', () => {
+            if (!this._refreshAfterDrag)
+                return;
+
+            this._refreshAfterDrag = false;
+            this._scheduleRefresh();
+        }, this);
+
         this.connect('destroy', () => {
             if (this._refreshId) {
                 GLib.Source.remove(this._refreshId);
@@ -440,13 +450,50 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
      */
     _drop(index, window, monitorIndex) {
         this._onDrop(index, window, monitorIndex);
+        this._releaseDraggedPreview(window);
         this._scheduleRefresh();
+    }
+
+    /**
+     * Take the dropped window's preview off the page it was dragged from, now.
+     *
+     * This is what ends the drag, and native GNOME gets it for free: a drop
+     * moves the window off its workspace, the Workspace drops its preview
+     * while acceptDrop is still running, and DND — finding its actor gone —
+     * finishes on the spot. Nothing here does that by itself, so DND took the
+     * other branch: `restoreOnSuccess` flew the preview back to the page it
+     * was just moved away from and held the drag open for the animation, with
+     * the rebuild destroying that page underneath it. The preview reappearing
+     * on the old workspace, input still grabbed, previews left pointing at
+     * siblings that no longer existed — that was the stuck drag.
+     *
+     * Only removal happens here. The page that gains the window gets it from
+     * the rebuild, which reads the final state; adding it by hand would reach
+     * further into Workspace for nothing that lasts more than one idle.
+     *
+     * A window dropped in from another monitor is not on any page here yet,
+     * so there is nothing to remove — its own Workspace lets go when Mutter
+     * moves it.
+     */
+    _releaseDraggedPreview(window) {
+        const index = this._state.indexOf(window);
+
+        for (const [position, page] of this._pages.entries()) {
+            if (position !== index && page.containsMetaWindow(window))
+                page._doRemoveWindow(window);
+        }
     }
 
     /**
      * Coalesce any number of drops/size-changes within one main loop turn into
      * a single rebuild that reads the final state — a burst of growth/shrink
      * from rapid open/close only costs one rebuild, not one per event.
+     *
+     * Never during a window drag. A dragged preview lives in uiGroup with its
+     * page still recorded as where to go back to; destroying that page under
+     * it leaves DND restoring into nothing and the preview stacked against
+     * siblings that are gone. `_inDrag` is the base class's own flag, and the
+     * rebuild waits for the drag to end.
      */
     _scheduleRefresh() {
         if (this._refreshId)
@@ -454,6 +501,12 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
 
         this._refreshId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
             this._refreshId = 0;
+
+            if (this._inDrag) {
+                this._refreshAfterDrag = true;
+                return GLib.SOURCE_REMOVE;
+            }
+
             this._rebuildPages();
             this._thumbnails.rebuild();
             return GLib.SOURCE_REMOVE;
@@ -490,6 +543,13 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         // another.
         this._scrollAdjustment.upper = this._state.size;
         this._scrollAdjustment.value = this._state.activeIndex;
+
+        // A new Workspace starts in the overview's hidden state, and only an
+        // overview transition moves it on. Rebuilt with the overview already
+        // open — after every drop — the pages sat there showing each window
+        // at full size where it is on screen, unarranged and on top of one
+        // another, until the overview was closed and opened again.
+        this._updateWorkspaceMode();
 
         this._updateWorkspacesState();
         this.queue_relayout();
