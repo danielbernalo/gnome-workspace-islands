@@ -70,6 +70,9 @@ const WORKSPACE_SWITCH_TIME = 250;
 /** Share of the monitor height the thumbnail strip may take. */
 const THUMBNAILS_HEIGHT_FRACTION = 0.11;
 
+/** Gap between the thumbnail strip and the pages, in logical pixels. */
+const THUMBNAILS_GAP = 16;
+
 /**
  * The tag for the page currently being constructed.
  *
@@ -606,9 +609,12 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         stripBox.set_size(width, stripHeight);
         this._thumbnails.allocate(stripBox);
 
+        const { scaleFactor } = St.ThemeContext.get_for_stage(global.stage);
+        const reserved = stripHeight + Math.round(THUMBNAILS_GAP * scaleFactor);
+
         const pagesBox = new Clutter.ActorBox();
-        pagesBox.set_origin(0, stripHeight);
-        pagesBox.set_size(width, height - stripHeight);
+        pagesBox.set_origin(0, reserved);
+        pagesBox.set_size(width, height - reserved);
 
         const spacing = this._getSpacing(pagesBox);
         const [pagesWidth, pagesHeight] = pagesBox.get_size();
