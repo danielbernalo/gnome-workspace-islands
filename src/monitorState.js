@@ -61,6 +61,7 @@ export class MonitorState {
         this._groups = Array.from({ length: MIN_SIZE }, () => new Set());
         this._appRules = new Map();
         this._sizeListeners = new Set();
+        this._reconcilePending = false;
     }
 
     setDynamic(dynamic) {
@@ -239,7 +240,7 @@ export class MonitorState {
      *   is recovering from churn, where the note is the whole point.
      * @returns {number} the index it was assigned to, or -1 if already tracked
      */
-    track(window, index = -1, { trustPlacement = true } = {}) {
+    track(window, index = -1, { trustPlacement = true, applyVisibility = true } = {}) {
         if (this.indexOf(window) !== -1)
             return -1;
 
@@ -254,7 +255,7 @@ export class MonitorState {
         this._place(window, target);
         this._growIfNeeded(target);
 
-        if (target !== this.activeIndex)
+        if (applyVisibility && target !== this.activeIndex)
             hide(window);
 
         return target;
@@ -297,7 +298,18 @@ export class MonitorState {
         return true;
     }
 
-    moveWindowTo(window, index) {
+    /**
+     * @param {object} [options]
+     * @param {boolean} [options.applyVisibility] false to update the model
+     *   only and leave the real minimize/unminimize to the caller. A drop in
+     *   the overview passes false: `window.minimize()` unmaps the client's
+     *   Wayland buffer, which invalidates the texture every overview clone of
+     *   that window is painting. Doing that mid-interaction is the
+     *   secondary-monitor sluggishness; the overview is showing clones anyway,
+     *   so the real window state only has to be right by the time the overview
+     *   hides.
+     */
+    moveWindowTo(window, index, { applyVisibility = true } = {}) {
         if (index < 0 || index >= this.size)
             return false;
 
@@ -313,10 +325,12 @@ export class MonitorState {
         // its application belongs, so it updates the rule.
         this.rememberApp(window, index);
 
-        if (index === this.activeIndex)
-            show(window);
-        else
-            hide(window);
+        if (applyVisibility) {
+            if (index === this.activeIndex)
+                show(window, { animate: false });
+            else
+                hide(window, { animate: false });
+        }
 
         // The group it left behind, not the one it joined — that one just grew.
         this._reconcileEmpties();
@@ -458,22 +472,39 @@ export class MonitorState {
         if (!this._dynamic)
             return;
 
-        const lastIndex = this.size - 1;
-        const removable = [];
-        for (let i = 0; i < this.size; i++) {
-            if (i === this.activeIndex || i === lastIndex)
-                continue;
-            if (this._groups[i].size === 0)
-                removable.push(i);
+        // The hazard is renumbering indices *while a drag is in flight* — that
+        // moves thumbnails out from under the pointer and lands the drop on
+        // the wrong workspace. It is not the overview as such. Defer instead:
+        // the extension replays this through `reconcileSize()` once
+        // `window-drag-end` has settled, so growth is bounded at +1 per drag
+        // and the spare is reclaimed as soon as the gesture is over.
+        if (Main.overview?._inWindowDrag) {
+            this._reconcilePending = true;
+            return;
         }
-        if (removable.length === 0)
+        this._reconcilePending = false;
+
+        // Reclaim from the end only, never from the middle.
+        //
+        // Removing an empty workspace from the middle renumbers every
+        // workspace after it, shifting thumbnails mid-gesture. Keeping the
+        // reclaim to the tail means no window's index ever changes underneath
+        // a drag.
+        let lastOccupied = -1;
+        for (let i = 0; i < this.size; i++) {
+            if (this._groups[i].size > 0)
+                lastOccupied = i;
+        }
+
+        // One spare past the last occupied workspace; never drop the one being
+        // viewed, and never below the floor — see MIN_SIZE.
+        const keep = Math.max(lastOccupied + 2, this.activeIndex + 1, MIN_SIZE);
+        if (keep >= this.size)
             return;
 
-        // Never below the floor, even if that means leaving some empty
-        // slots in place — see MIN_SIZE.
-        const toRemove = new Set(removable.slice(0, Math.max(0, this.size - MIN_SIZE)));
-        if (toRemove.size === 0)
-            return;
+        const toRemove = new Set();
+        for (let i = keep; i < this.size; i++)
+            toRemove.add(i);
 
         // Re-stamp windows whose index changed as each slot is kept, so a
         // future reclaim/restore agrees with where they actually ended up —
@@ -522,6 +553,16 @@ export class MonitorState {
      */
     reconcileSize() {
         this._reconcileEmpties();
+    }
+
+    /**
+     * Whether a prune was skipped because a drag was in flight, clearing the
+     * flag as it reports.
+     */
+    consumePendingReconcile() {
+        const pending = this._reconcilePending;
+        this._reconcilePending = false;
+        return pending;
     }
 }
 
