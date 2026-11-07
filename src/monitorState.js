@@ -239,7 +239,7 @@ export class MonitorState {
      *   is recovering from churn, where the note is the whole point.
      * @returns {number} the index it was assigned to, or -1 if already tracked
      */
-    track(window, index = -1, { trustPlacement = true } = {}) {
+    track(window, index = -1, { trustPlacement = true, applyVisibility = true } = {}) {
         if (this.indexOf(window) !== -1)
             return -1;
 
@@ -254,7 +254,7 @@ export class MonitorState {
         this._place(window, target);
         this._growIfNeeded(target);
 
-        if (target !== this.activeIndex)
+        if (applyVisibility && target !== this.activeIndex)
             hide(window);
 
         return target;
@@ -297,7 +297,18 @@ export class MonitorState {
         return true;
     }
 
-    moveWindowTo(window, index) {
+    /**
+     * @param {object} [options]
+     * @param {boolean} [options.applyVisibility] false to update the model
+     *   only and leave the real minimize/unminimize to the caller. A drop in
+     *   the overview passes false: `window.minimize()` unmaps the client's
+     *   Wayland buffer, which invalidates the texture every overview clone of
+     *   that window is painting. Doing that mid-interaction is the
+     *   secondary-monitor sluggishness; the overview is showing clones anyway,
+     *   so the real window state only has to be right by the time the overview
+     *   hides.
+     */
+    moveWindowTo(window, index, { applyVisibility = true } = {}) {
         if (index < 0 || index >= this.size)
             return false;
 
@@ -313,10 +324,12 @@ export class MonitorState {
         // its application belongs, so it updates the rule.
         this.rememberApp(window, index);
 
-        if (index === this.activeIndex)
-            show(window);
-        else
-            hide(window);
+        if (applyVisibility) {
+            if (index === this.activeIndex)
+                show(window, { animate: false });
+            else
+                hide(window, { animate: false });
+        }
 
         // The group it left behind, not the one it joined — that one just grew.
         this._reconcileEmpties();
