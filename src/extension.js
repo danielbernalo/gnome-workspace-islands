@@ -219,6 +219,11 @@ export default class WorkspaceIslands extends Extension {
             object.disconnect(id);
         this._signals = null;
 
+        if (this._reconcileId) {
+            GLib.Source.remove(this._reconcileId);
+            this._reconcileId = 0;
+        }
+
         this._registry?.clear();
         this._registry = null;
         this._mutterSettings = null;
@@ -281,6 +286,24 @@ export default class WorkspaceIslands extends Extension {
     }
 
     _connectSignals() {
+        this._connect(Main.overview, 'window-drag-end', () => {
+            if (this._reconcileId)
+                return;
+            this._reconcileId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                this._reconcileId = 0;
+                let pruned = false;
+                for (const state of this._registry?.states ?? []) {
+                    if (!state.consumePendingReconcile())
+                        continue;
+                    state.reconcileSize();
+                    pruned = true;
+                }
+                if (pruned)
+                    this._indicator?.sync();
+                return GLib.SOURCE_REMOVE;
+            });
+        });
+
         this._connect(global.display, 'window-created', (_d, window) => {
             this._trackWindow(window);
         });
