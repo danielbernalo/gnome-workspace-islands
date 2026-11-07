@@ -71,6 +71,43 @@ const WORKSPACE_SWITCH_TIME = 250;
 const THUMBNAILS_HEIGHT_FRACTION = 0.11;
 
 /**
+ * Release the native `WindowPreview` a drag came from, the way the shell does.
+ *
+ * Native `WindowPreview` sets `restoreOnSuccess: true` and we cannot change
+ * that. On an accepted drop dnd.js therefore calls `_restoreDragActor()` and
+ * returns early, skipping `_dragComplete()` — the only caller of
+ * `_ungrabEvents()` — so the pointer stays modally grabbed for the whole
+ * REVERT_ANIMATION_TIME (750ms) ease. Native gets away with it because a real
+ * workspace drag ends in `change_workspace_by_index()`, whose `window-removed`
+ * runs `Workspace._doRemoveWindow()` -> `clone.destroy()`, and destroying the
+ * drag actor trips dnd's destroy handler -> `_finishAnimation()` ->
+ * `_dragComplete()` in 0ms.
+ *
+ * Moving a window between *virtual* workspaces fires no Meta signal at all, so
+ * that never happens and the full 750ms plays out on every drop.
+ *
+ * Call the shell's own removal rather than destroying the actor directly:
+ * `Workspace._windows` is spliced only by `_removeWindowClone()`, so a bare
+ * `destroy()` would leave a disposed `WindowPreview` in that array for
+ * `_lookupIndex()` and the `hideOverlay` sweep to walk later.
+ *
+ * A no-op for our own thumbnails and previews, which carry no `_workspace`
+ * and already drag with `restoreOnSuccess: false`.
+ */
+export function releaseDragPreview(source) {
+    const workspace = source?._workspace;
+    const window = source?.metaWindow;
+    if (!workspace || !window || typeof workspace._doRemoveWindow !== 'function')
+        return;
+
+    try {
+        workspace._doRemoveWindow(window);
+    } catch (e) {
+        console.warn(`workspace-islands: releasing drag preview failed: ${e}`);
+    }
+}
+
+/**
  * The tag for the page currently being constructed.
  *
  * `Workspace._init` ends with
@@ -182,10 +219,15 @@ class IslandsThumbnail extends St.Widget {
         if (!source?.metaWindow)
             return false;
 
-        if (this._state.indexOf(source.metaWindow) === this._index)
+        const win = source.metaWindow;
+        if (this._state.indexOf(win) === this._index)
             return false;
 
-        this._onDrop(this._index, source.metaWindow, this._monitor.index);
+        // Before the move: onDrop() can schedule a rebuild of the very page
+        // this preview belongs to.
+        releaseDragPreview(source);
+
+        this._onDrop(this._index, win, this._monitor.index);
         return true;
     }
 

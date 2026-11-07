@@ -79,7 +79,7 @@ import {
 
 import { isHiddenByUs } from './visibility.js';
 import { scrollDelta } from './scroll.js';
-import { VirtualWorkspacesView, tagFor } from './workspacesView.js';
+import { VirtualWorkspacesView, tagFor, releaseDragPreview } from './workspacesView.js';
 
 /** Identifies the replacement action on the group; SwipeTracker uses it too. */
 const TRACKER_NAME = 'workspace-islands overview swipe tracker';
@@ -230,12 +230,18 @@ function patchDropTarget() {
             if (!virtual || !source?.metaWindow)
                 return originalMethod.call(this, source, actor, x, y, time);
 
-            if (virtual.state.indexOf(source.metaWindow) === virtual.index)
+            const win = source.metaWindow;
+            const currentWs = virtual.state.indexOf(win);
+            if (currentWs === virtual.index)
                 return false;
+
+            // Before the move: onDrop() can schedule a rebuild of the very
+            // page this preview belongs to.
+            releaseDragPreview(source);
 
             // The callback rides on the tag, because that is the only thing a
             // page carries that this module put there.
-            virtual.onDrop?.(virtual.index, source.metaWindow, this.monitorIndex);
+            virtual.onDrop?.(virtual.index, win, this.monitorIndex);
             return true;
         });
 }
