@@ -185,7 +185,62 @@ class IslandsThumbnail extends St.Widget {
         this._previews = [];
         this.setWindows(state.windowsOn(index));
 
+        // restoreOnSuccess MUST stay false here. On an accepted drop, dnd.js
+        // takes `_restoreDragActor()` when it is true, which eases the drag
+        // actor back over REVERT_ANIMATION_TIME (750ms) and only calls
+        // `_dragComplete()` — the sole caller of `_ungrabEvents()` — when that
+        // ease finishes. The pointer therefore stays modally grabbed for 750ms
+        // after every drop. With `false`, dnd destroys it and ungrabs inline.
+        this._draggable = DND.makeDraggable(this, {
+            restoreOnSuccess: false,
+            dragActorMaxSize: 120,
+            dragActorOpacity: 200,
+        });
+
+        this._draggable.connect('drag-begin', () => {
+            const win = this.metaWindow;
+            if (win)
+                Main.overview.beginWindowDrag(win);
+        });
+        this._draggable.connect('drag-cancelled', () => {
+            const win = this.metaWindow;
+            if (win)
+                Main.overview.cancelledWindowDrag(win);
+        });
+        this._draggable.connect('drag-end', () => {
+            const win = this.metaWindow;
+            if (win)
+                Main.overview.endWindowDrag(win);
+        });
+
         this.connect('destroy', () => this._onDestroy());
+    }
+
+    get metaWindow() {
+        if (this._destroyed)
+            return null;
+        const windows = this._state.windowsOn(this._index);
+        return windows.length > 0 ? windows[windows.length - 1] : null;
+    }
+
+    getDragActor() {
+        if (this._destroyed)
+            return new Clutter.Actor();
+        const win = this.metaWindow;
+        if (!win)
+            return new Clutter.Actor();
+        const frame = win.get_frame_rect();
+        const dragActor = new Clutter.Actor({
+            layout_manager: new Shell.WindowPreviewLayout(),
+            width: Math.max(frame.width, 1),
+            height: Math.max(frame.height, 1),
+        });
+        dragActor.layout_manager.add_window(win);
+        return dragActor;
+    }
+
+    getDragActorSource() {
+        return this;
     }
 
     /** Rebuild the contents. A drop changes what belongs here. */
@@ -207,7 +262,7 @@ class IslandsThumbnail extends St.Widget {
      * from is not a gesture anyone can perform. The thumbnails are.
      */
     handleDragOver(source) {
-        if (!source?.metaWindow)
+        if (this._destroyed || !source?.metaWindow)
             return DND.DragMotionResult.CONTINUE;
 
         return this._state.indexOf(source.metaWindow) === this._index
@@ -216,7 +271,7 @@ class IslandsThumbnail extends St.Widget {
     }
 
     acceptDrop(source) {
-        if (!source?.metaWindow)
+        if (this._destroyed || !source?.metaWindow)
             return false;
 
         const win = source.metaWindow;
@@ -240,6 +295,8 @@ class IslandsThumbnail extends St.Widget {
      */
     _addWindow(window) {
         const frame = window.get_frame_rect();
+        if (frame.width <= 0 || frame.height <= 0)
+            return;
 
         const preview = new Clutter.Actor({
             layout_manager: new Shell.WindowPreviewLayout(),
@@ -247,27 +304,59 @@ class IslandsThumbnail extends St.Widget {
             y: frame.y - this._monitor.y,
             width: frame.width,
             height: frame.height,
+            reactive: true,
         });
 
-        if (!preview.layout_manager.add_window(window)) {
+        const clone = preview.layout_manager.add_window(window);
+        if (!clone) {
             preview.destroy();
             return;
         }
 
+        Shell.util_set_hidden_from_pick(clone, true);
+
+        preview._delegate = preview;
+        preview.metaWindow = window;
+
+        const draggable = DND.makeDraggable(preview, {
+            restoreOnSuccess: false,
+            dragActorMaxSize: 120,
+            dragActorOpacity: 200,
+        });
+
+        draggable.connect('drag-begin', () => {
+            Main.overview.beginWindowDrag(window);
+        });
+        draggable.connect('drag-cancelled', () => {
+            Main.overview.cancelledWindowDrag(window);
+        });
+        draggable.connect('drag-end', () => {
+            Main.overview.endWindowDrag(window);
+        });
+
         this._contents.add_child(preview);
         this._previews.push(preview);
+
+        preview.connect('destroy', () => {
+            const at = this._previews.indexOf(preview);
+            if (at !== -1)
+                this._previews.splice(at, 1);
+        });
     }
 
     vfunc_allocate(box) {
         this.set_allocation(box);
 
         const [width, height] = box.get_size();
+        if (width <= 0 || height <= 0 || this._monitor.width <= 0 || this._monitor.height <= 0)
+            return;
         this._contents.set_scale(
             width / this._monitor.width, height / this._monitor.height);
         this._contents.allocate_preferred_size(0, 0);
     }
 
     _onDestroy() {
+        this._destroyed = true;
         this._backgroundManager?.destroy();
         this._backgroundManager = null;
     }
@@ -296,6 +385,7 @@ class IslandsThumbnails extends St.Widget {
         this._indicator = new St.Widget({
             style_class: 'workspace-thumbnail-indicator',
         });
+        Shell.util_set_hidden_from_pick(this._indicator, true);
         this.add_child(this._indicator);
 
         this.setActive(state.activeIndex);
