@@ -130,14 +130,21 @@ export const VIRTUAL = Symbol('workspace-islands.virtual');
 
 /** The tag a Workspace should filter by right now, instance or in-flight. */
 export function tagFor(workspace) {
-    return workspace[VIRTUAL] ?? building;
+    return (workspace && workspace[VIRTUAL]) ? workspace[VIRTUAL] : building;
 }
 
 function createPage(monitorIndex, overviewAdjustment, tag) {
     building = tag;
     try {
         const page = new Workspace(null, monitorIndex, overviewAdjustment);
+        page.clip_to_allocation = true;
         page[VIRTUAL] = tag;
+        if (page.stateAdjustment) {
+            const progress = Math.clamp(overviewAdjustment?.value ?? 1, 0, 1);
+            page.stateAdjustment.value = progress;
+            if (tag?.state && tag.state.activeIndex === tag.index)
+                page._container?.layout_manager?.syncOverlays?.();
+        }
         return page;
     } finally {
         building = null;
@@ -153,7 +160,7 @@ function createPage(monitorIndex, overviewAdjustment, tag) {
  */
 const Thumbnail = GObject.registerClass(
 class IslandsThumbnail extends St.Widget {
-    _init(monitor, state, index, onDrop) {
+    _init(monitor, state, index, onDrop, onActivate) {
         super._init({
             style_class: 'workspace-thumbnail',
             reactive: true,
@@ -164,6 +171,7 @@ class IslandsThumbnail extends St.Widget {
         this._state = state;
         this._index = index;
         this._onDrop = onDrop;
+        this._onActivate = onActivate;
 
         // DND finds a target through `_delegate`, not through the actor.
         this._delegate = this;
@@ -243,15 +251,43 @@ class IslandsThumbnail extends St.Widget {
         return this;
     }
 
-    /** Rebuild the contents. A drop changes what belongs here. */
+    /**
+     * Sync the contents to `windows`, reusing the previews already here.
+     *
+     * Destroying and re-adding every `Shell.WindowPreviewLayout` on each sync
+     * re-acquires a texture per window per thumbnail, which is the bulk of the
+     * per-drop cost on a secondary monitor. Only the difference is touched.
+     */
     setWindows(windows) {
-        for (const preview of this._previews)
-            preview.destroy();
+        if (this._destroyed)
+            return;
 
-        this._previews = [];
+        if (this._draggable?._dndGesture)
+            this._draggable._dndGesture.enabled = windows.length > 0;
 
-        for (const window of windows)
-            this._addWindow(window);
+        const wanted = new Set(windows);
+        for (const preview of [...this._previews]) {
+            if (wanted.has(preview.metaWindow))
+                wanted.delete(preview.metaWindow);
+            else
+                preview.destroy();
+        }
+
+        for (const window of windows) {
+            if (wanted.has(window))
+                this._addWindow(window);
+        }
+
+        // Stacking follows `windows`, which is the order the state hands them
+        // over; a reused preview would otherwise keep whatever depth it had.
+        let below = null;
+        for (const window of windows) {
+            const preview = this._previews.find(p => p.metaWindow === window);
+            if (!preview)
+                continue;
+            this._contents.set_child_above_sibling(preview, below);
+            below = preview;
+        }
     }
 
     /**
@@ -392,6 +428,20 @@ class IslandsThumbnails extends St.Widget {
     }
 
     /**
+     * Update window clones in place without destroying thumbnail actors.
+     * Prevents gesture drops or DND aborts during overview interactions.
+     */
+    syncWindows() {
+        if (this._thumbnails.length !== this._state.size) {
+            this.rebuild();
+            return;
+        }
+        for (let i = 0; i < this._thumbnails.length; i++)
+            this._thumbnails[i].setWindows(this._state.windowsOn(i));
+        this.setActive(this._state.activeIndex);
+    }
+
+    /**
      * Below `this._indicator` when it already exists, so a rebuild does not
      * repaint the fresh thumbnails on top of it — the indicator is a border
      * overlay and has to stay the topmost child. Not yet built the first
@@ -399,7 +449,7 @@ class IslandsThumbnails extends St.Widget {
      */
     _buildThumbnails() {
         for (let index = 0; index < this._state.size; index++) {
-            const thumbnail = new Thumbnail(this._monitor, this._state, index, this._onDrop);
+            const thumbnail = new Thumbnail(this._monitor, this._state, index, this._onDrop, this._onActivate);
 
             const click = new Clutter.ClickGesture();
             click.connect('recognize', () => this._onActivate(index));
@@ -508,6 +558,7 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         this._monitorIndex = monitorIndex;
         this._monitor = Main.layoutManager.monitors[monitorIndex];
         this._refreshId = 0;
+        this._dragEndId = 0;
 
         this._workspace[VIRTUAL] = first;
         this._pages = [this._workspace];
@@ -555,6 +606,10 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
                 GLib.Source.remove(this._refreshId);
                 this._refreshId = 0;
             }
+            if (this._dragEndId) {
+                Main.overview.disconnect(this._dragEndId);
+                this._dragEndId = 0;
+            }
             this._unsubscribeSize?.();
         });
 
@@ -584,10 +639,37 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         if (this._refreshId)
             return;
 
+        // If a window is currently being dragged, defer refresh until DND completes
+        if (Main.overview._inWindowDrag) {
+            if (this._dragEndId)
+                return;
+
+            this._dragEndId = Main.overview.connect('window-drag-end', () => {
+                if (this._dragEndId) {
+                    Main.overview.disconnect(this._dragEndId);
+                    this._dragEndId = 0;
+                }
+                GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+                    this._scheduleRefresh();
+                    return GLib.SOURCE_REMOVE;
+                });
+            });
+            return;
+        }
+
         this._refreshId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
             this._refreshId = 0;
-            this._rebuildPages();
-            this._thumbnails.rebuild();
+            if (Main.overview._inWindowDrag) {
+                this._scheduleRefresh();
+                return GLib.SOURCE_REMOVE;
+            }
+            if (this._pages.length !== this._state.size) {
+                this._rebuildPages();
+                this._thumbnails.rebuild();
+            } else {
+                this._thumbnails.syncWindows();
+                this._updateWorkspacesState();
+            }
             return GLib.SOURCE_REMOVE;
         });
     }
@@ -609,6 +691,9 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
             this._pages.push(page);
         }
 
+        if (this._thumbnails)
+            this.set_child_above_sibling(this._thumbnails, null);
+
         // The first page stands in for `this._workspace`, which the parent
         // class still reaches for in _updateWorkspaceMode.
         this._workspace = this._pages[0];
@@ -621,9 +706,10 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         // pages showing one workspace while the thumbnail strip highlights
         // another.
         this._scrollAdjustment.upper = this._state.size;
-        this._scrollAdjustment.value = this._state.activeIndex;
+        this._scrollAdjustment.value = Math.clamp(this._scrollAdjustment.value, 0, this._state.size - 1);
 
         this._updateWorkspacesState();
+        this._updateWorkspaceMode();
         this.queue_relayout();
     }
 
@@ -672,12 +758,23 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
     /** Ported from WorkspacesView._updateWorkspacesState. */
     _updateWorkspacesState() {
         const value = this._scrollAdjustment?.value ?? 0;
+        const progress = Math.clamp(this._overviewAdjustment?.value ?? 1, 0, 1);
+        const currentIndex = Math.round(value);
 
         for (const [index, page] of (this._pages ?? []).entries()) {
             const distance = Math.abs(value - index);
-            const scale = lerp(WORKSPACE_INACTIVE_SCALE, 1,
-                1 - Math.min(Math.max(distance, 0), 1));
+            const scaleProgress = 1 - Math.min(Math.max(distance, 0), 1);
 
+            // Hide distant workspaces to prevent offscreen window previews from bleeding
+            page.visible = Math.abs(index - currentIndex) <= 1;
+
+            if (page.stateAdjustment) {
+                page.stateAdjustment.value = progress;
+                if (distance < 0.5 && progress > 0.9)
+                    page._container?.layout_manager?.syncOverlays?.();
+            }
+
+            const scale = lerp(WORKSPACE_INACTIVE_SCALE, 1, scaleProgress);
             page.set_scale(scale, scale);
         }
     }
@@ -685,9 +782,17 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
     _updateWorkspaceMode() {
         super._updateWorkspaceMode();
 
-        const { value } = this._workspace.stateAdjustment;
-        for (const page of this._pages ?? [])
-            page.stateAdjustment.value = value;
+        const progress = Math.clamp(this._overviewAdjustment?.value ?? 1, 0, 1);
+        const value = this._scrollAdjustment?.value ?? 0;
+
+        for (const [index, page] of (this._pages ?? []).entries()) {
+            if (page.stateAdjustment) {
+                const distance = Math.abs(value - index);
+                page.stateAdjustment.value = progress;
+                if (distance < 0.5 && progress > 0.9)
+                    page._container?.layout_manager?.syncOverlays?.();
+            }
+        }
     }
 
     vfunc_allocate(box) {
