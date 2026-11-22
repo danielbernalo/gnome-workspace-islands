@@ -45,12 +45,18 @@ export class Persistence {
     constructor(settings) {
         this._settings = settings;
         this._saveId = 0;
+
+        // What saved-state holds, per connector, as of the last load or save.
+        // A save merges into this rather than replacing it — see saveNow().
+        this._monitors = {};
     }
 
     /**
      * @returns {{monitors: Object<string, {activeIndex: number, apps: Object<string, number>}>}}
      */
     load() {
+        this._monitors = {};
+
         const raw = this._settings.get_string(STATE_KEY);
         if (!raw)
             return { monitors: {} };
@@ -59,6 +65,11 @@ export class Persistence {
             const parsed = JSON.parse(raw);
             if (parsed?.version !== VERSION || typeof parsed.monitors !== 'object')
                 return { monitors: {} };
+
+            // Only a plain object is a usable merge base. An array would be
+            // spread into keys "0", "1"… and written back as monitors.
+            if (parsed.monitors && !Array.isArray(parsed.monitors))
+                this._monitors = { ...parsed.monitors };
 
             return { monitors: parsed.monitors ?? {} };
         } catch (e) {
@@ -80,8 +91,19 @@ export class Persistence {
         });
     }
 
+    /**
+     * Write the live arrangement over the saved one, connector by connector.
+     *
+     * Merged, not rebuilt. The registry only holds the monitors this enable()
+     * has seen, and saved-state is the only place the others live: the
+     * display at home while you are at the office, or the dock unplugged
+     * before a lock tore this extension down and built it back without it.
+     * Rebuilding from the registry alone would erase each of those on the
+     * first save, which is exactly the "returns to its own arrangement"
+     * promise in the header broken by the act of keeping it.
+     */
     saveNow(registry) {
-        const monitors = {};
+        const monitors = { ...this._monitors };
 
         for (const state of registry.states) {
             monitors[state.connector] = {
@@ -95,19 +117,32 @@ export class Persistence {
                 version: VERSION,
                 monitors,
             }));
+            this._monitors = monitors;
         } catch (e) {
             console.warn(`workspace-islands: could not save state: ${e}`);
         }
     }
 
-    /** Flush any pending write and stop the timer. Call from disable(). */
+    /**
+     * Write now and stop the timer. Call from disable().
+     *
+     * Unconditional, not only when a save is pending. Not every change to the
+     * model schedules one — a window closing on an inactive workspace in
+     * dynamic mode collapses that workspace and shifts the active index
+     * underneath everything after it — and disable() is the last moment the
+     * live model exists. A lock is a disable, so skipping the write here would
+     * restore the stale index at unlock and park the window the user was
+     * looking at. Safe only because saveNow() merges: a rebuild-from-registry
+     * save on every lock would erase every monitor not attached at the time.
+     */
     flush(registry) {
-        if (!this._saveId)
-            return;
+        if (this._saveId) {
+            GLib.Source.remove(this._saveId);
+            this._saveId = 0;
+        }
 
-        GLib.Source.remove(this._saveId);
-        this._saveId = 0;
-        this.saveNow(registry);
+        if (registry)
+            this.saveNow(registry);
     }
 
     destroy() {

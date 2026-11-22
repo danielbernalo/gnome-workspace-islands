@@ -21,6 +21,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { hide, show, isHiddenByUs } from './visibility.js';
 import { appKeyOf } from './persistence.js';
 import { stamp, placementIndex } from './placement.js';
+import { isManageable } from './windowFilter.js';
 
 /**
  * Every monitor keeps at least this many virtual workspaces, dynamic or not.
@@ -60,6 +61,17 @@ export class MonitorState {
         this._dynamic = dynamic;
         this._groups = Array.from({ length: MIN_SIZE }, () => new Set());
         this._appRules = new Map();
+
+        // Restored rules whose app has not had a window here yet. They are
+        // the ones an empty workspace can be reclaimed out from under — see
+        // _reconcileEmpties().
+        this._unconfirmedApps = new Set();
+
+        // Restored rules that lost their workspace before their app opened a
+        // window, in their saved order. Each means "a fresh workspace of its
+        // own" — see indexForApp().
+        this._pendingApps = new Set();
+
         this._sizeListeners = new Set();
     }
 
@@ -83,9 +95,24 @@ export class MonitorState {
             listener();
     }
 
-    /** Plain object for serialisation: WM_CLASS -> virtual workspace index. */
+    /**
+     * Plain object for serialisation: WM_CLASS -> virtual workspace index.
+     *
+     * Pending rules are written past the end, one index each in their saved
+     * order. That is the shape that restores into the same thing: the next
+     * restore() grows for them, the workspaces it grows are empty, and the
+     * enable-time reconcile turns them back into pending rules. Writing them
+     * at any index inside the arrangement would instead file the app on some
+     * workspace another app's windows now occupy.
+     */
     get appRules() {
-        return Object.fromEntries(this._appRules);
+        const rules = Object.fromEntries(this._appRules);
+
+        let next = this.size;
+        for (const key of this._pendingApps)
+            rules[key] = next++;
+
+        return rules;
     }
 
     /**
@@ -124,6 +151,8 @@ export class MonitorState {
                 .filter(([, index]) => Number.isInteger(index))
                 .map(([key, index]) => [key, clamp(index, 0, this.size - 1)])
         );
+        this._unconfirmedApps = new Set(this._appRules.keys());
+        this._pendingApps = new Set();
     }
 
     /**
@@ -140,6 +169,9 @@ export class MonitorState {
      * Anything the growth cannot justify is collapsed straight back out by
      * `reconcileSize()` once `enable()` has adopted the real windows, so this
      * being generous costs a moment of oversized bookkeeping and nothing else.
+     * The rules that pointed at those workspaces are not collapsed with them:
+     * at login no app has a window yet, so every one of them is empty, and
+     * dropping them would throw away every rule but the last.
      *
      * @param {number} activeIndex
      * @param {Object<string, number>} apps
@@ -158,14 +190,49 @@ export class MonitorState {
     /** Remember where this window's application belongs. */
     rememberApp(window, index) {
         const key = appKeyOf(window);
-        if (key)
+        if (!key)
+            return;
+
+        this._appRules.set(key, index);
+        this._pendingApps.delete(key);
+        this._unconfirmedApps.delete(key);
+    }
+
+    /**
+     * A window of this app was just placed on `index`: its rule, if it was
+     * restored, is no longer waiting for one. A pending rule takes the index
+     * the window got, so the app's next window joins this one instead of
+     * claiming a fresh workspace of its own again.
+     */
+    _confirmApp(window, index) {
+        const key = appKeyOf(window);
+        if (!key)
+            return;
+
+        this._unconfirmedApps.delete(key);
+        if (this._pendingApps.delete(key))
             this._appRules.set(key, index);
     }
 
-    /** Saved workspace for this window's application, or -1 if unknown. */
+    /**
+     * Saved workspace for this window's application, or -1 if unknown.
+     *
+     * A pending rule answers with the last workspace — the trailing spare in
+     * dynamic mode. Its own workspace is gone, and the spare is the one that is
+     * guaranteed to be fresh: once the window lands there, _growIfNeeded()
+     * makes a new spare, so the next pending app gets a workspace of its own
+     * too. In fixed mode that is the last workspace, which is where a rule
+     * saved past the end would have been clamped anyway.
+     */
     indexForApp(window) {
         const key = appKeyOf(window);
-        if (!key || !this._appRules.has(key))
+        if (!key)
+            return -1;
+
+        if (this._pendingApps.has(key))
+            return this.size - 1;
+
+        if (!this._appRules.has(key))
             return -1;
 
         return clamp(this._appRules.get(key), 0, this.size - 1);
@@ -177,8 +244,33 @@ export class MonitorState {
 
         // Clamped like indexForApp, and for a sharper reason: a note can
         // outlive a shrink of `virtual-workspaces`, because resize() can only
-        // reach windows that are in a group at the time.
+        // reach windows that are in a group at the time. In dynamic mode the
+        // caller grows first — see _growForPlacement() — so this only bites
+        // above MAX_RESTORE_SIZE.
         return index < 0 ? -1 : clamp(index, 0, this.size - 1);
+    }
+
+    /**
+     * Make room for this window's note before it is read, in dynamic mode.
+     *
+     * A dynamic monitor is rebuilt at enable() sized only from what was
+     * saved — the active index and the app rules — never from the notes,
+     * and windows are adopted in stacking order, not workspace order. A note
+     * naming workspace 3 read while the monitor has two would be clamped onto
+     * workspace 2, and stamped there, merging two workspaces for good after
+     * every lock. Fixed mode keeps the clamp: there, a note past the end is a
+     * workspace the user removed, and folding is what a shrink means.
+     *
+     * Any gap this opens, for a window that closed while the extension was
+     * away, is collapsed by the reconcileSize() that follows every adoption.
+     */
+    _growForPlacement(window) {
+        if (!this._dynamic)
+            return;
+
+        const index = placementIndex(window, this.connector);
+        if (index >= this.size)
+            this.resize(Math.min(index + 1, MAX_RESTORE_SIZE));
     }
 
     /**
@@ -248,21 +340,32 @@ export class MonitorState {
      *   and honouring an old note would make the window they are holding
      *   vanish onto some workspace they are not looking at. Every other caller
      *   is recovering from churn, where the note is the whole point.
-     * @returns {number} the index it was assigned to, or -1 if already tracked
+     * A window the model cannot hold is refused here, not only by the caller:
+     * every way into a group ends in this method, an overview drop included,
+     * so this is the one check nothing can route around. See windowFilter.js.
+     *
+     * @returns {number} the index it was assigned to, or -1 if already
+     *   tracked or refused
      */
     track(window, index = -1, { trustPlacement = true } = {}) {
-        if (this.indexOf(window) !== -1)
+        if (this.indexOf(window) !== -1 || !isManageable(window))
             return -1;
 
         let target = index;
-        if (target < 0 || target >= this.size)
-            target = trustPlacement ? this.indexForPlacement(window) : -1;
+        if (target < 0 || target >= this.size) {
+            target = -1;
+            if (trustPlacement) {
+                this._growForPlacement(window);
+                target = this.indexForPlacement(window);
+            }
+        }
         if (target < 0)
             target = this.indexForApp(window);
         if (target < 0)
             target = this.activeIndex;
 
         this._place(window, target);
+        this._confirmApp(window, target);
         this._growIfNeeded(target);
 
         if (target !== this.activeIndex)
@@ -271,13 +374,20 @@ export class MonitorState {
         return target;
     }
 
-    untrack(window) {
+    /**
+     * @param {object} [options]
+     * @param {boolean} [options.reconcile] collapse what this emptied. False
+     *   for a caller that releases several windows in a row and reconciles
+     *   once at the end: collapsing between them re-indexes the windows still
+     *   here, and the notes of the ones already gone stay in the old frame.
+     */
+    untrack(window, { reconcile = true } = {}) {
         const from = this.indexOf(window);
 
         for (const group of this._groups)
             group.delete(window);
 
-        if (from !== -1)
+        if (from !== -1 && reconcile)
             this._reconcileEmpties();
     }
 
@@ -395,7 +505,16 @@ export class MonitorState {
         // ever asked "was this one yours" and never walked — a window closed
         // while the display is unplugged must not be kept alive by our
         // bookkeeping, and would be a dead reference by the time it came back.
-        this._detached = new WeakSet(this.allWindows);
+        //
+        // Added to, never replaced. pruneDetached() runs on every layout
+        // change, and calls this again for a monitor that is still away — on
+        // groups that are already empty. Replacing the set there would forget
+        // every window the first unplug recorded, and a lid close or a resume
+        // while undocked would be enough to lose the reclaim. Entries leave
+        // only through _place(), when the window is back in a group.
+        this._detached ??= new WeakSet();
+        for (const window of this.allWindows)
+            this._detached.add(window);
 
         this.restoreAll();
 
@@ -433,6 +552,20 @@ export class MonitorState {
 
             if (this.activeIndex >= size)
                 this.activeIndex = size - 1;
+
+            // The fold can land parked windows on the workspace that is on
+            // screen — the active one was the last, or was itself folded and
+            // clamped onto it — and nothing else would show them until the
+            // user switched away and back. Only what we parked: a window the
+            // user minimized stays minimized, which show() already honours.
+            // Nothing needs hiding: a fold into an inactive workspace only
+            // ever carries windows that were already parked.
+            if (this.activeIndex === size - 1) {
+                for (const window of this.windowsOn(size - 1)) {
+                    if (isHiddenByUs(window))
+                        show(window, { animate: false });
+                }
+            }
 
             // Rules pointing past the new end would silently send windows nowhere.
             for (const [key, index] of this._appRules) {
@@ -513,11 +646,36 @@ export class MonitorState {
         // loses its home — dropped, the same way a stale rule a shrink can't
         // reach is already dropped today, rather than remapped to somewhere
         // it never asked for.
+        //
+        // Except a restored rule whose app has not opened a window yet. Its
+        // workspace was not emptied by anybody; it was empty because nothing
+        // had started, and at login that is every rule there is. Those become
+        // pending instead — see indexForApp(). So does one left pointing at
+        // the empty trailing spare: pending rules resolve to that same spare,
+        // and two apps both claiming it would end up sharing a workspace.
         const newAppRules = new Map();
+        const homeless = [];
         for (const [key, oldIndex] of this._appRules) {
             if (oldToNew.has(oldIndex))
                 newAppRules.set(key, oldToNew.get(oldIndex));
+            else if (this._unconfirmedApps.has(key))
+                homeless.push([key, oldIndex]);
         }
+
+        const newLast = newGroups.length - 1;
+        if (newGroups[newLast].size === 0) {
+            for (const [key, index] of newAppRules) {
+                if (index === newLast && this._unconfirmedApps.has(key)) {
+                    newAppRules.delete(key);
+                    homeless.push([key, lastIndex]);
+                }
+            }
+        }
+
+        homeless.sort(([, a], [, b]) => a - b);
+        for (const [key] of homeless)
+            this._pendingApps.add(key);
+
         this._appRules = newAppRules;
 
         this._notifySizeChanged();
@@ -533,6 +691,30 @@ export class MonitorState {
      */
     reconcileSize() {
         this._reconcileEmpties();
+
+        // An empty active workspace directly before the empty last one is the
+        // spare already; the last is a second one. _reconcileEmpties() keeps
+        // both, which is right at runtime — that is the shape you are left in
+        // when the window you were looking at closes — but here it is an
+        // artefact of saving while sitting on the spare: appRules writes
+        // pending rules past `size`, restore() grows past the active index
+        // for them, and the active and the last survive the collapse as two
+        // empties. Left there, the arrangement grows by one at every unlock,
+        // and the next pending app resolves to the last workspace instead of
+        // the one on screen and opens hidden. Dropping the last, which is
+        // empty so nothing folds, makes the round trip restore what was saved.
+        const last = this.size - 1;
+        if (this._dynamic && this.activeIndex === last - 1 &&
+            this._groups[last].size === 0 && this._groups[last - 1].size === 0)
+            this.resize(last);
+
+        // The other half of the invariant. _reconcileEmpties() only ever
+        // removes, and every path that fills the last workspace grows a spare
+        // as it does — except the ones that arrive here: switching from fixed
+        // mode with the last workspace occupied, or a restore whose windows
+        // filled it without going through track().
+        if (this._dynamic && this._groups[this.size - 1].size > 0)
+            this.resize(this.size + 1);
     }
 }
 
@@ -548,6 +730,10 @@ export class Registry {
         this._fixedCount = fixedCount;
         this._dynamic = dynamic;
         this._states = new Map();
+
+        // The monitor whose workspace was just switched to an empty one. See
+        // holdFocus().
+        this._heldFocus = null;
 
         // Kept around rather than applied once: a monitor plugged in later in
         // the session must get its saved arrangement too, not a default one.
@@ -637,8 +823,9 @@ export class Registry {
     /**
      * Switch every monitor between fixed and dynamic.
      *
-     * Fixed -> dynamic: trims any excess trailing empties, but does not
-     * force-grow anything — growth resumes organically from here.
+     * Fixed -> dynamic: trims empty workspaces the way dynamic mode would
+     * have, and adds the empty spare if the last workspace is occupied.
+     * Growth resumes organically from there.
      * Dynamic -> fixed: forces every monitor to the exact configured count,
      * identical to a plain count change today.
      */
@@ -667,6 +854,62 @@ export class Registry {
     untrackEverywhere(window) {
         for (const state of this._states.values())
             state.untrack(window);
+    }
+
+    /**
+     * Drop every window that sits on a different monitor from the one whose
+     * group holds it.
+     *
+     * For the end of a layout change, which is the one time this happens
+     * without the window telling us. While the layout moves, the per-window
+     * monitor signals are ignored — see the extension's window-left-monitor
+     * handler — so a window Mutter put somewhere else is still filed where it
+     * was. Bookkeeping only, and without collapsing anything: what is left
+     * gets adopted, reapplied and reconciled by the settle right after, and a
+     * window that is now on no secondary at all is shown by
+     * {@link restoreOrphans}.
+     */
+    releaseStrays() {
+        for (const state of this._states.values()) {
+            for (const window of state.allWindows) {
+                if (this.forWindow(window) !== state)
+                    state.untrack(window, { reconcile: false });
+            }
+        }
+    }
+
+    /**
+     * Show every window we parked that no workspace holds any more.
+     *
+     * The tag lives on the window, the groups live here, and a few paths can
+     * separate them — a monitor change moving a parked window to the primary,
+     * a slide settling a window that left its group. Such a window is
+     * minimized with nothing on screen to explain it, and nothing but this
+     * would ever bring it back.
+     *
+     * @param {Iterable<Meta.Window>} windows every window the shell has
+     */
+    restoreOrphans(windows) {
+        for (const window of windows) {
+            if (isHiddenByUs(window) && !this.states.some(state => state.indexOf(window) !== -1))
+                show(window, { animate: false });
+        }
+    }
+
+    /**
+     * Keep the keyboard on a monitor that has nothing left to focus.
+     *
+     * Switching a monitor to an empty workspace parks the focused window, and
+     * Mutter then hands focus to whatever is on top elsewhere — the primary.
+     * The extension unsets focus instead, and this is what makes the next
+     * shortcut still land here: {@link forFocusedMonitor} would otherwise fall
+     * back to the pointer, and a hand on the keyboard says nothing about
+     * where the pointer is. Only consulted while nothing has focus.
+     *
+     * @param {string|null} connector
+     */
+    holdFocus(connector) {
+        this._heldFocus = connector;
     }
 
     /** Create state for a connector that is not currently attached. */
@@ -710,6 +953,9 @@ export class Registry {
      * fallback for when nothing is focused at all.
      */
     forFocusedMonitor() {
+        if (this._heldFocus && !global.display.focus_window)
+            return this.forConnector(this._heldFocus);
+
         const index = focusedMonitorIndex();
         if (index < 0 || index === Main.layoutManager.primaryIndex)
             return null;
@@ -755,11 +1001,26 @@ export class Registry {
             if (!live.has(connector))
                 state.detach();
         }
+
+        if (this._heldFocus && !live.has(this._heldFocus))
+            this._heldFocus = null;
     }
 
-    restoreAll() {
+    /**
+     * Put every window we parked back on screen. Must be total — see
+     * visibility.js.
+     *
+     * The groups are not enough on their own: a window can carry our tag
+     * while no group holds it (see {@link restoreOrphans}), and after an
+     * unload nothing would ever show it again.
+     *
+     * @param {Iterable<Meta.Window>} [windows] every window the shell has
+     */
+    restoreAll(windows = []) {
         for (const state of this._states.values())
             state.restoreAll();
+
+        this.restoreOrphans(windows);
     }
 
     clear() {

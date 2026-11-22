@@ -26,12 +26,33 @@
  * restored, so a window the user minimized by hand on some other virtual
  * workspace stays minimized. A window left hidden after the extension unloads
  * would be invisible and unreachable — that is the failure this guards.
+ *
+ * "Parked" and "minimized by us" are not the same thing, and conflating them
+ * is how that promise was once broken. A window the user minimized and then
+ * switched away from is parked like every other window on that workspace —
+ * the Alt+Tab filter, the overview and the follow-an-outside-unminimize path
+ * all need it to count as living elsewhere — but it was never ours to bring
+ * back. So the tag is two marks: HIDDEN says "parked", and USER_MINIMIZED,
+ * recorded the moment a window is first parked, says "and it was already
+ * minimized when we got it". show() and reveal() only un-minimize a parked
+ * window without the second mark, and leave every untagged minimized window
+ * alone, which is what keeps a hand-minimized window minimized across a
+ * switch round trip, the reapply() of an enable(), and disable().
  */
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-/** Marks a window as minimized *by us*. Never touch windows without it. */
+/** Marks a window as parked *by us*. Never touch windows without it. */
 const HIDDEN = Symbol.for('workspace-islands.hidden');
+
+/**
+ * Marks a parked window that was already minimized when it was parked.
+ *
+ * Only ever set alongside HIDDEN and always cleared with it, so it can never
+ * outlive the park it describes. `Symbol.for` for the same reason as HIDDEN:
+ * a window parked before a disable/enable cycle must still be recognised.
+ */
+const USER_MINIMIZED = Symbol.for('workspace-islands.user-minimized');
 
 /**
  * True while this module is driving a minimize/unminimize.
@@ -54,6 +75,16 @@ export function isApplying() {
 export function hide(window, { animate = true } = {}) {
     applying = true;
     try {
+        // Recorded on the first park only. A window already parked has been
+        // minimized by us since, and asking again would read our own doing
+        // back as the user's.
+        if (!window[HIDDEN]) {
+            if (window.minimized)
+                window[USER_MINIMIZED] = true;
+            else
+                delete window[USER_MINIMIZED];
+        }
+
         if (!window.minimized) {
             if (!animate)
                 skipEffect(window);
@@ -67,11 +98,18 @@ export function hide(window, { animate = true } = {}) {
     }
 }
 
-/** @param {object} [options] see {@link hide} */
+/**
+ * Un-park a window. Un-minimizes it only if we were the ones who minimized it:
+ * an untagged minimized window (the user minimized it on the active
+ * workspace) and a window parked while already minimized both stay as the
+ * user left them.
+ *
+ * @param {object} [options] see {@link hide}
+ */
 export function show(window, { animate = true } = {}) {
     applying = true;
     try {
-        if (window.minimized) {
+        if (window.minimized && minimizedByUs(window)) {
             if (!animate)
                 skipEffect(window);
 
@@ -79,6 +117,7 @@ export function show(window, { animate = true } = {}) {
         }
 
         delete window[HIDDEN];
+        delete window[USER_MINIMIZED];
     } finally {
         applying = false;
     }
@@ -94,11 +133,15 @@ export function show(window, { animate = true } = {}) {
  *
  * Only safe behind something opaque. Called with nothing covering the monitor,
  * this flashes every window of every prepared workspace onto the screen.
+ *
+ * A window the user minimized is not revealed. Its clone paints nothing, which
+ * is what the screen will show once the slide lands, and the hide() that
+ * re-parks the losing pages leaves it exactly as it found it.
  */
 export function reveal(window) {
     applying = true;
     try {
-        if (window.minimized) {
+        if (window.minimized && minimizedByUs(window)) {
             skipEffect(window);
             window.unminimize();
         }
@@ -122,8 +165,14 @@ function skipEffect(window) {
 /** Drop the tag without touching the window. For windows that left our care. */
 export function forget(window) {
     delete window[HIDDEN];
+    delete window[USER_MINIMIZED];
 }
 
+/** Parked on an inactive virtual workspace, whoever minimized it. */
 export function isHiddenByUs(window) {
     return window[HIDDEN] === true;
+}
+
+function minimizedByUs(window) {
+    return isHiddenByUs(window) && window[USER_MINIMIZED] !== true;
 }
