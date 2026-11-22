@@ -103,6 +103,17 @@ export class MonitorState {
      * that blob from becoming a hostile allocation.
      */
     restore({ activeIndex = 0, apps = {} } = {}) {
+        // Both come out of a JSON blob in gsettings, which anything can write.
+        // A destructuring default only replaces `undefined`, so a `null` would
+        // reach Object.entries() and throw, and clamp() passes NaN and
+        // fractions straight through to be used as an array index. Either one
+        // throws inside enable(), on every login and every unlock, because
+        // the bad entry is never overwritten by a successful save.
+        if (!Number.isInteger(activeIndex))
+            activeIndex = 0;
+        if (!apps || typeof apps !== 'object')
+            apps = {};
+
         if (this._dynamic)
             this._growForRestore(activeIndex, apps);
 
@@ -558,9 +569,17 @@ export class Registry {
         if (!this._dynamic)
             state.resize(this._fixedCount);
 
+        // A saved arrangement is a convenience; a monitor is not. If restoring
+        // ever throws, start this monitor fresh rather than let enable() fail
+        // on every login over a blob a successful save would have replaced.
         const saved = this._saved?.monitors?.[connector];
-        if (saved)
-            state.restore(saved);
+        if (saved) {
+            try {
+                state.restore(saved);
+            } catch (error) {
+                console.warn(`workspace-islands: ignoring saved state for ${connector}: ${error}`);
+            }
+        }
 
         this._states.set(connector, state);
         return state;
