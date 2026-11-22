@@ -71,6 +71,43 @@ const WORKSPACE_SWITCH_TIME = 250;
 const THUMBNAILS_HEIGHT_FRACTION = 0.11;
 
 /**
+ * Release the native `WindowPreview` a drag came from, the way the shell does.
+ *
+ * Native `WindowPreview` sets `restoreOnSuccess: true` and we cannot change
+ * that. On an accepted drop dnd.js therefore calls `_restoreDragActor()` and
+ * returns early, skipping `_dragComplete()` — the only caller of
+ * `_ungrabEvents()` — so the pointer stays modally grabbed for the whole
+ * REVERT_ANIMATION_TIME (750ms) ease. Native gets away with it because a real
+ * workspace drag ends in `change_workspace_by_index()`, whose `window-removed`
+ * runs `Workspace._doRemoveWindow()` -> `clone.destroy()`, and destroying the
+ * drag actor trips dnd's destroy handler -> `_finishAnimation()` ->
+ * `_dragComplete()` in 0ms.
+ *
+ * Moving a window between *virtual* workspaces fires no Meta signal at all, so
+ * that never happens and the full 750ms plays out on every drop.
+ *
+ * Call the shell's own removal rather than destroying the actor directly:
+ * `Workspace._windows` is spliced only by `_removeWindowClone()`, so a bare
+ * `destroy()` would leave a disposed `WindowPreview` in that array for
+ * `_lookupIndex()` and the `hideOverlay` sweep to walk later.
+ *
+ * A no-op for our own thumbnails and previews, which carry no `_workspace`
+ * and already drag with `restoreOnSuccess: false`.
+ */
+export function releaseDragPreview(source) {
+    const workspace = source?._workspace;
+    const window = source?.metaWindow;
+    if (!workspace || !window || typeof workspace._doRemoveWindow !== 'function')
+        return;
+
+    try {
+        workspace._doRemoveWindow(window);
+    } catch (e) {
+        console.warn(`workspace-islands: releasing drag preview failed: ${e}`);
+    }
+}
+
+/**
  * The tag for the page currently being constructed.
  *
  * `Workspace._init` ends with
@@ -93,14 +130,21 @@ export const VIRTUAL = Symbol('workspace-islands.virtual');
 
 /** The tag a Workspace should filter by right now, instance or in-flight. */
 export function tagFor(workspace) {
-    return workspace[VIRTUAL] ?? building;
+    return (workspace && workspace[VIRTUAL]) ? workspace[VIRTUAL] : building;
 }
 
 function createPage(monitorIndex, overviewAdjustment, tag) {
     building = tag;
     try {
         const page = new Workspace(null, monitorIndex, overviewAdjustment);
+        page.clip_to_allocation = true;
         page[VIRTUAL] = tag;
+        if (page.stateAdjustment) {
+            const progress = Math.clamp(overviewAdjustment?.value ?? 1, 0, 1);
+            page.stateAdjustment.value = progress;
+            if (tag?.state && tag.state.activeIndex === tag.index)
+                page._container?.layout_manager?.syncOverlays?.();
+        }
         return page;
     } finally {
         building = null;
@@ -116,7 +160,7 @@ function createPage(monitorIndex, overviewAdjustment, tag) {
  */
 const Thumbnail = GObject.registerClass(
 class IslandsThumbnail extends St.Widget {
-    _init(monitor, state, index, onDrop) {
+    _init(monitor, state, index, onDrop, onActivate) {
         super._init({
             style_class: 'workspace-thumbnail',
             reactive: true,
@@ -127,6 +171,7 @@ class IslandsThumbnail extends St.Widget {
         this._state = state;
         this._index = index;
         this._onDrop = onDrop;
+        this._onActivate = onActivate;
 
         // DND finds a target through `_delegate`, not through the actor.
         this._delegate = this;
@@ -148,18 +193,101 @@ class IslandsThumbnail extends St.Widget {
         this._previews = [];
         this.setWindows(state.windowsOn(index));
 
+        // restoreOnSuccess MUST stay false here. On an accepted drop, dnd.js
+        // takes `_restoreDragActor()` when it is true, which eases the drag
+        // actor back over REVERT_ANIMATION_TIME (750ms) and only calls
+        // `_dragComplete()` — the sole caller of `_ungrabEvents()` — when that
+        // ease finishes. The pointer therefore stays modally grabbed for 750ms
+        // after every drop. With `false`, dnd destroys it and ungrabs inline.
+        this._draggable = DND.makeDraggable(this, {
+            restoreOnSuccess: false,
+            dragActorMaxSize: 120,
+            dragActorOpacity: 200,
+        });
+
+        this._draggable.connect('drag-begin', () => {
+            const win = this.metaWindow;
+            if (win)
+                Main.overview.beginWindowDrag(win);
+        });
+        this._draggable.connect('drag-cancelled', () => {
+            const win = this.metaWindow;
+            if (win)
+                Main.overview.cancelledWindowDrag(win);
+        });
+        this._draggable.connect('drag-end', () => {
+            const win = this.metaWindow;
+            if (win)
+                Main.overview.endWindowDrag(win);
+        });
+
         this.connect('destroy', () => this._onDestroy());
     }
 
-    /** Rebuild the contents. A drop changes what belongs here. */
+    get metaWindow() {
+        if (this._destroyed)
+            return null;
+        const windows = this._state.windowsOn(this._index);
+        return windows.length > 0 ? windows[windows.length - 1] : null;
+    }
+
+    getDragActor() {
+        if (this._destroyed)
+            return new Clutter.Actor();
+        const win = this.metaWindow;
+        if (!win)
+            return new Clutter.Actor();
+        const frame = win.get_frame_rect();
+        const dragActor = new Clutter.Actor({
+            layout_manager: new Shell.WindowPreviewLayout(),
+            width: Math.max(frame.width, 1),
+            height: Math.max(frame.height, 1),
+        });
+        dragActor.layout_manager.add_window(win);
+        return dragActor;
+    }
+
+    getDragActorSource() {
+        return this;
+    }
+
+    /**
+     * Sync the contents to `windows`, reusing the previews already here.
+     *
+     * Destroying and re-adding every `Shell.WindowPreviewLayout` on each sync
+     * re-acquires a texture per window per thumbnail, which is the bulk of the
+     * per-drop cost on a secondary monitor. Only the difference is touched.
+     */
     setWindows(windows) {
-        for (const preview of this._previews)
-            preview.destroy();
+        if (this._destroyed)
+            return;
 
-        this._previews = [];
+        if (this._draggable?._dndGesture)
+            this._draggable._dndGesture.enabled = windows.length > 0;
 
-        for (const window of windows)
-            this._addWindow(window);
+        const wanted = new Set(windows);
+        for (const preview of [...this._previews]) {
+            if (wanted.has(preview.metaWindow))
+                wanted.delete(preview.metaWindow);
+            else
+                preview.destroy();
+        }
+
+        for (const window of windows) {
+            if (wanted.has(window))
+                this._addWindow(window);
+        }
+
+        // Stacking follows `windows`, which is the order the state hands them
+        // over; a reused preview would otherwise keep whatever depth it had.
+        let below = null;
+        for (const window of windows) {
+            const preview = this._previews.find(p => p.metaWindow === window);
+            if (!preview)
+                continue;
+            this._contents.set_child_above_sibling(preview, below);
+            below = preview;
+        }
     }
 
     /**
@@ -170,7 +298,7 @@ class IslandsThumbnail extends St.Widget {
      * from is not a gesture anyone can perform. The thumbnails are.
      */
     handleDragOver(source) {
-        if (!source?.metaWindow)
+        if (this._destroyed || !source?.metaWindow)
             return DND.DragMotionResult.CONTINUE;
 
         return this._state.indexOf(source.metaWindow) === this._index
@@ -179,13 +307,18 @@ class IslandsThumbnail extends St.Widget {
     }
 
     acceptDrop(source) {
-        if (!source?.metaWindow)
+        if (this._destroyed || !source?.metaWindow)
             return false;
 
-        if (this._state.indexOf(source.metaWindow) === this._index)
+        const win = source.metaWindow;
+        if (this._state.indexOf(win) === this._index)
             return false;
 
-        this._onDrop(this._index, source.metaWindow, this._monitor.index);
+        // Before the move: onDrop() can schedule a rebuild of the very page
+        // this preview belongs to.
+        releaseDragPreview(source);
+
+        this._onDrop(this._index, win, this._monitor.index);
         return true;
     }
 
@@ -198,6 +331,8 @@ class IslandsThumbnail extends St.Widget {
      */
     _addWindow(window) {
         const frame = window.get_frame_rect();
+        if (frame.width <= 0 || frame.height <= 0)
+            return;
 
         const preview = new Clutter.Actor({
             layout_manager: new Shell.WindowPreviewLayout(),
@@ -205,27 +340,59 @@ class IslandsThumbnail extends St.Widget {
             y: frame.y - this._monitor.y,
             width: frame.width,
             height: frame.height,
+            reactive: true,
         });
 
-        if (!preview.layout_manager.add_window(window)) {
+        const clone = preview.layout_manager.add_window(window);
+        if (!clone) {
             preview.destroy();
             return;
         }
 
+        Shell.util_set_hidden_from_pick(clone, true);
+
+        preview._delegate = preview;
+        preview.metaWindow = window;
+
+        const draggable = DND.makeDraggable(preview, {
+            restoreOnSuccess: false,
+            dragActorMaxSize: 120,
+            dragActorOpacity: 200,
+        });
+
+        draggable.connect('drag-begin', () => {
+            Main.overview.beginWindowDrag(window);
+        });
+        draggable.connect('drag-cancelled', () => {
+            Main.overview.cancelledWindowDrag(window);
+        });
+        draggable.connect('drag-end', () => {
+            Main.overview.endWindowDrag(window);
+        });
+
         this._contents.add_child(preview);
         this._previews.push(preview);
+
+        preview.connect('destroy', () => {
+            const at = this._previews.indexOf(preview);
+            if (at !== -1)
+                this._previews.splice(at, 1);
+        });
     }
 
     vfunc_allocate(box) {
         this.set_allocation(box);
 
         const [width, height] = box.get_size();
+        if (width <= 0 || height <= 0 || this._monitor.width <= 0 || this._monitor.height <= 0)
+            return;
         this._contents.set_scale(
             width / this._monitor.width, height / this._monitor.height);
         this._contents.allocate_preferred_size(0, 0);
     }
 
     _onDestroy() {
+        this._destroyed = true;
         this._backgroundManager?.destroy();
         this._backgroundManager = null;
     }
@@ -254,9 +421,24 @@ class IslandsThumbnails extends St.Widget {
         this._indicator = new St.Widget({
             style_class: 'workspace-thumbnail-indicator',
         });
+        Shell.util_set_hidden_from_pick(this._indicator, true);
         this.add_child(this._indicator);
 
         this.setActive(state.activeIndex);
+    }
+
+    /**
+     * Update window clones in place. Rebuilding the thumbnail strip on every
+     * drop aborts any drag gesture currently targeting one of its actors.
+     */
+    syncWindows() {
+        if (this._thumbnails.length !== this._state.size) {
+            this.rebuild();
+            return;
+        }
+        for (let i = 0; i < this._thumbnails.length; i++)
+            this._thumbnails[i].setWindows(this._state.windowsOn(i));
+        this.setActive(this._state.activeIndex);
     }
 
     /**
@@ -267,7 +449,7 @@ class IslandsThumbnails extends St.Widget {
      */
     _buildThumbnails() {
         for (let index = 0; index < this._state.size; index++) {
-            const thumbnail = new Thumbnail(this._monitor, this._state, index, this._onDrop);
+            const thumbnail = new Thumbnail(this._monitor, this._state, index, this._onDrop, this._onActivate);
 
             const click = new Clutter.ClickGesture();
             click.connect('recognize', () => this._onActivate(index));
@@ -376,6 +558,7 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         this._monitorIndex = monitorIndex;
         this._monitor = Main.layoutManager.monitors[monitorIndex];
         this._refreshId = 0;
+        this._dragEndId = 0;
 
         this._workspace[VIRTUAL] = first;
         this._pages = [this._workspace];
@@ -423,6 +606,10 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
                 GLib.Source.remove(this._refreshId);
                 this._refreshId = 0;
             }
+            if (this._dragEndId) {
+                Main.overview.disconnect(this._dragEndId);
+                this._dragEndId = 0;
+            }
             this._unsubscribeSize?.();
         });
 
@@ -452,10 +639,37 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         if (this._refreshId)
             return;
 
+        // Dropping an actor while a drag is in flight cancels the gesture.
+        if (Main.overview._inWindowDrag) {
+            if (this._dragEndId)
+                return;
+
+            this._dragEndId = Main.overview.connect('window-drag-end', () => {
+                if (this._dragEndId) {
+                    Main.overview.disconnect(this._dragEndId);
+                    this._dragEndId = 0;
+                }
+                GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+                    this._scheduleRefresh();
+                    return GLib.SOURCE_REMOVE;
+                });
+            });
+            return;
+        }
+
         this._refreshId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
             this._refreshId = 0;
-            this._rebuildPages();
-            this._thumbnails.rebuild();
+            if (Main.overview._inWindowDrag) {
+                this._scheduleRefresh();
+                return GLib.SOURCE_REMOVE;
+            }
+            if (this._pages.length !== this._state.size) {
+                this._rebuildPages();
+                this._thumbnails.rebuild();
+            } else {
+                this._thumbnails.syncWindows();
+                this._updateWorkspacesState();
+            }
             return GLib.SOURCE_REMOVE;
         });
     }
@@ -477,6 +691,9 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
             this._pages.push(page);
         }
 
+        if (this._thumbnails)
+            this.set_child_above_sibling(this._thumbnails, null);
+
         // The first page stands in for `this._workspace`, which the parent
         // class still reaches for in _updateWorkspaceMode.
         this._workspace = this._pages[0];
@@ -489,9 +706,10 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         // pages showing one workspace while the thumbnail strip highlights
         // another.
         this._scrollAdjustment.upper = this._state.size;
-        this._scrollAdjustment.value = this._state.activeIndex;
+        this._scrollAdjustment.value = Math.clamp(this._scrollAdjustment.value, 0, this._state.size - 1);
 
         this._updateWorkspacesState();
+        this._updateWorkspaceMode();
         this.queue_relayout();
     }
 
@@ -540,12 +758,23 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
     /** Ported from WorkspacesView._updateWorkspacesState. */
     _updateWorkspacesState() {
         const value = this._scrollAdjustment?.value ?? 0;
+        const progress = Math.clamp(this._overviewAdjustment?.value ?? 1, 0, 1);
+        const currentIndex = Math.round(value);
 
         for (const [index, page] of (this._pages ?? []).entries()) {
             const distance = Math.abs(value - index);
-            const scale = lerp(WORKSPACE_INACTIVE_SCALE, 1,
-                1 - Math.min(Math.max(distance, 0), 1));
+            const scaleProgress = 1 - Math.min(Math.max(distance, 0), 1);
 
+            // Cull distant pages so offscreen previews do not bleed through clip bounds.
+            page.visible = Math.abs(index - currentIndex) <= 1;
+
+            if (page.stateAdjustment) {
+                page.stateAdjustment.value = progress;
+                if (distance < 0.5 && progress > 0.9)
+                    page._container?.layout_manager?.syncOverlays?.();
+            }
+
+            const scale = lerp(WORKSPACE_INACTIVE_SCALE, 1, scaleProgress);
             page.set_scale(scale, scale);
         }
     }
@@ -553,9 +782,17 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
     _updateWorkspaceMode() {
         super._updateWorkspaceMode();
 
-        const { value } = this._workspace.stateAdjustment;
-        for (const page of this._pages ?? [])
-            page.stateAdjustment.value = value;
+        const progress = Math.clamp(this._overviewAdjustment?.value ?? 1, 0, 1);
+        const value = this._scrollAdjustment?.value ?? 0;
+
+        for (const [index, page] of (this._pages ?? []).entries()) {
+            if (page.stateAdjustment) {
+                const distance = Math.abs(value - index);
+                page.stateAdjustment.value = progress;
+                if (distance < 0.5 && progress > 0.9)
+                    page._container?.layout_manager?.syncOverlays?.();
+            }
+        }
     }
 
     vfunc_allocate(box) {

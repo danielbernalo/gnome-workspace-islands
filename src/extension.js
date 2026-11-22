@@ -174,6 +174,17 @@ export default class WorkspaceIslands extends Extension {
             this._settleId = 0;
         }
 
+        // Owed minimizes are dropped, not applied: restoreAll() below shows
+        // every window we hid, so settling them first would minimize and then
+        // immediately unminimize each one — the exact round trip this defers
+        // in the first place.
+        this._deferredVisibility = null;
+
+        if (this._overviewHiddenId) {
+            Main.overview.disconnect(this._overviewHiddenId);
+            this._overviewHiddenId = 0;
+        }
+
         // Flush before tearing anything down, or the last couple of seconds of
         // changes are lost on every logout.
         this._persistence?.flush(this._registry);
@@ -207,6 +218,11 @@ export default class WorkspaceIslands extends Extension {
         for (const [object, id] of this._signals ?? [])
             object.disconnect(id);
         this._signals = null;
+
+        if (this._reconcileId) {
+            GLib.Source.remove(this._reconcileId);
+            this._reconcileId = 0;
+        }
 
         this._registry?.clear();
         this._registry = null;
@@ -270,6 +286,24 @@ export default class WorkspaceIslands extends Extension {
     }
 
     _connectSignals() {
+        this._connect(Main.overview, 'window-drag-end', () => {
+            if (this._reconcileId)
+                return;
+            this._reconcileId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                this._reconcileId = 0;
+                let pruned = false;
+                for (const state of this._registry?.states ?? []) {
+                    if (!state.consumePendingReconcile())
+                        continue;
+                    state.reconcileSize();
+                    pruned = true;
+                }
+                if (pruned)
+                    this._indicator?.sync();
+                return GLib.SOURCE_REMOVE;
+            });
+        });
+
         this._connect(global.display, 'window-created', (_d, window) => {
             this._trackWindow(window);
         });
@@ -696,14 +730,70 @@ export default class WorkspaceIslands extends Extension {
         if (window.get_monitor() !== monitorIndex)
             window.move_to_monitor(monitorIndex);
 
+        // In the overview the user is looking at clones, so the real
+        // minimize/unminimize is deferred to overview-hide and batched there.
+        // Applying it here cost a Wayland buffer unmap on every drop, in the
+        // middle of the gesture.
+        const applyVisibility = !Main.overview?.visible;
+
         if (state.indexOf(window) === -1)
-            state.track(window, index);
+            state.track(window, index, { applyVisibility });
         else
-            state.moveWindowTo(window, index);
+            state.moveWindowTo(window, index, { applyVisibility });
+
+        if (!applyVisibility)
+            this._deferVisibility(state, window);
 
         this._afterChange(
             `dropped "${window.get_title()}" on virtual workspace ${index + 1} ` +
             `of ${state.connector}`);
+    }
+
+    /**
+     * Remember a window whose real visibility is owed, and settle the whole
+     * batch the next time the overview hides.
+     *
+     * Only the windows actually moved are replayed, rather than a blanket
+     * `reapply()`: that would also un-minimize anything the user had minimized
+     * by hand on an active virtual workspace.
+     */
+    _deferVisibility(state, window) {
+        this._deferredVisibility ??= new Map();
+        this._deferredVisibility.set(window, state);
+
+        if (this._overviewHiddenId)
+            return;
+
+        this._overviewHiddenId = Main.overview.connect('hidden', () => {
+            this._flushDeferredVisibility();
+        });
+    }
+
+    _flushDeferredVisibility() {
+        const pending = this._deferredVisibility;
+        this._deferredVisibility = null;
+
+        if (this._overviewHiddenId) {
+            Main.overview.disconnect(this._overviewHiddenId);
+            this._overviewHiddenId = 0;
+        }
+
+        for (const [window, state] of pending ?? []) {
+            if (!window.get_compositor_private())
+                continue;
+
+            if (this._registry?.forWindow(window) !== state)
+                continue;
+
+            const index = state.indexOf(window);
+            if (index === -1)
+                continue;
+
+            if (index === state.activeIndex)
+                show(window, { animate: false });
+            else
+                hide(window, { animate: false });
+        }
     }
 
     _moveFocused(delta) {
