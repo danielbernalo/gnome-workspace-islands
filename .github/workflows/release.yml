@@ -14,9 +14,13 @@ jobs:
     steps:
       # Tags, not just the commit: the previous one is needed to scope the
       # generated changelog, and a shallow checkout has none.
-      - uses: actions/checkout@v4
+      # Pinned by commit, not tag: a tag can be moved to different code.
+      # The publish step authenticates through GH_TOKEN, so the token does not
+      # need to stay in .git/config for the rest of the job.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install GLib tools
         run: sudo apt-get update && sudo apt-get install -y libglib2.0-bin
