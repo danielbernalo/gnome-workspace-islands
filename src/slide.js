@@ -101,16 +101,42 @@ import * as Background from 'resource:///org/gnome/shell/ui/background.js';
 import * as Layout from 'resource:///org/gnome/shell/ui/layout.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as SwipeTracker from 'resource:///org/gnome/shell/ui/swipeTracker.js';
-import {
-    WINDOW_ANIMATION_TIME,
-    WORKSPACE_SPACING,
-} from 'resource:///org/gnome/shell/ui/workspaceAnimation.js';
+import * as WorkspaceAnimation from 'resource:///org/gnome/shell/ui/workspaceAnimation.js';
 
 import { monitorIndexOf } from './monitorState.js';
 import { hide, reveal } from './visibility.js';
 
+// Read off the namespace rather than imported by name: a named import of a
+// shell module has to exist when the module links, and the Node test stubs
+// (tests/support/hooks.mjs) only provide a fixed list of names.
+const { WINDOW_ANIMATION_TIME, WORKSPACE_SPACING } = WorkspaceAnimation;
+
 /** Identifies the replacement action on the stage; SwipeTracker uses it too. */
 const TRACKER_NAME = 'workspace-islands swipe tracker';
+
+/**
+ * The windows a page clones, bottom first — the order add_child() needs, since
+ * the last child paints on top.
+ *
+ * Group order is the order windows were tracked in, and raising a window does
+ * not change it. Cloned in that order, the cover would show a different window
+ * on top than the screen did a frame earlier, and swap back when it comes
+ * down. The shell's own WorkspaceGroup has the same problem and solves it with
+ * stacking order too.
+ *
+ * Windows not showing on their workspace are left out, again like
+ * WorkspaceGroup, which sets `clone.visible = window.showing_on_its_workspace()`
+ * itself rather than trusting a clone of a minimized actor to stay blank —
+ * the overview draws minimized windows through exactly such clones. Without
+ * it, a window the user minimized pops onto the page for the length of the
+ * slide. By the time a page is filled, reveal() has already brought back every
+ * window this extension parked, so what is still minimized here is minimized
+ * by the user, or the transient of a window that is.
+ */
+export function cloneOrder(windows) {
+    return global.display.sort_windows_by_stacking(
+        windows.filter(window => window.showing_on_its_workspace()));
+}
 
 /**
  * One workspace, drawn as wallpaper plus clones.
@@ -146,7 +172,7 @@ class IslandsSlidePage extends Clutter.Actor {
     }
 
     fill(windows) {
-        for (const window of windows)
+        for (const window of cloneOrder(windows))
             this._addClone(window);
     }
 
@@ -330,8 +356,12 @@ export class SlideController {
         this._claimed = false;
 
         // The overview owns the whole screen while it is up, secondary
-        // monitors included. The shell already disables its tracker there, so
-        // the gesture stops on its own; only a running slide needs dropping.
+        // monitors included. Its modal moves Main.actionMode to OVERVIEW, and
+        // the touchpad gesture drops events — END included — that do not match
+        // the tracker's allowed modes, so a swipe in progress never finishes
+        // on its own. The shell's 'showing' handler only disables the tracker
+        // for a switch of its own; for ours, _cancel() drops the slide and
+        // resets the tracker.
         //
         // The lock screen is the same shape of problem with a worse ending. The
         // shield takes a modal grab, Main.actionMode becomes LOCK_SCREEN, and
@@ -340,6 +370,8 @@ export class SlideController {
         // set, so sliding is dead for the rest of the session, the cover stays
         // on the stage, and disable_unredirect() is never balanced. Until this
         // extension declared unlock-dialog, being disabled on lock hid that.
+        //
+        // Any other modal does the same; see _onKeyFocusChanged().
         this._signals = [
             [Main.overview, Main.overview.connect('showing',
                 () => this._cancel())],
@@ -348,6 +380,8 @@ export class SlideController {
                     if (Main.sessionMode.isLocked)
                         this._cancel();
                 })],
+            [global.stage, global.stage.connect('notify::key-focus',
+                () => this._onKeyFocusChanged())],
         ];
 
         this._takeOverTracker();
@@ -609,11 +643,66 @@ export class SlideController {
         if (!session)
             return;
 
+        const claimed = this._claimed;
         this._session = null;
         this._claimed = false;
 
         this._settle(session, session.state.activeIndex);
         this._teardown(session);
+
+        if (claimed)
+            this._resetTracker();
+    }
+
+    /**
+     * Take the tracker out of a swipe whose end will never arrive.
+     *
+     * Every caller of _cancel() mid-gesture is a case where the END event is
+     * dropped (overview, lock, a modal) or no longer matters (a layout change).
+     * The tracker stays SCROLLING, and SwipeTracker._beginGesture() returns
+     * early while it is — so the next swipe, on any monitor, primary included,
+     * gets no 'begin' and is swallowed whole. The shell's own 'showing' handler
+     * does not help: it only disables the tracker when the shell has a switch
+     * of its own in flight, and a secondary gesture never creates one.
+     *
+     * Disabling a SCROLLING tracker is how SwipeTracker gets out of one itself:
+     * the setter calls _interrupt(), which emits 'end' and resets the state. Only
+     * after the session is gone, because that 'end' arrives synchronously and
+     * would otherwise land — commit — the slide being cancelled. With no
+     * session it falls through to the shell's _switchWorkspaceEnd, which has
+     * nothing to end.
+     *
+     * A tracker that is already disabled is not SCROLLING (the setter
+     * interrupted it), and turning it back on would override whoever disabled
+     * it — the shell does, around its own animations.
+     */
+    _resetTracker() {
+        if (!this._tracker?.enabled)
+            return;
+
+        this._tracker.enabled = false;
+        this._tracker.enabled = true;
+    }
+
+    /**
+     * Drop a gesture that a modal has just cut off.
+     *
+     * Main.pushModal() moves Main.actionMode off NORMAL, and from then on the
+     * touchpad gesture drops events — the END included — before SwipeTracker
+     * sees them. The overview and the lock screen are handled by name; this is
+     * everything else: Alt+Tab, a screenshot, the calendar, a polkit prompt.
+     * Missing one leaves the cover frozen mid-slide, and the next swipe —
+     * whichever monitor it is on — drives this stale one instead.
+     *
+     * There is no signal for actionMode itself. pushModal() assigns it and then
+     * moves key focus, so the focus change is the moment to look. The shell's
+     * own workspace switch takes a modal grab in NORMAL mode, which this rightly
+     * leaves alone. An unclaimed slide is easing to its end on its own and needs
+     * nothing.
+     */
+    _onKeyFocusChanged() {
+        if (this._claimed && (Main.actionMode & Shell.ActionMode.NORMAL) === 0)
+            this._cancel();
     }
 
     /**
@@ -653,6 +742,15 @@ export class SlideController {
             return false;
 
         if (this._session) {
+            // Only its own monitor's, though. A keyboard slide runs on the
+            // focused monitor, and the pointer — which picks monitorIndex — can
+            // be on another; adopting there would have this swipe drive, and
+            // commit, a switch on the wrong monitor. Declining hands it to the
+            // shell, which ignores a secondary monitor, so the running slide
+            // lands untouched.
+            if (this._getState(monitorIndex) !== this._session.state)
+                return false;
+
             // A swipe landing on a running animation adopts it. Its transition
             // is dropped, which also drops the onComplete that would commit —
             // and it becomes a gesture, so it lands without an OSD.
