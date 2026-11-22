@@ -150,6 +150,14 @@ All three default to **on**, and each buys its polish with something real. That 
 
 The slide is the one worth understanding: making two workspaces visible side by side requires briefly cloning their windows. The clones live for about a quarter second and are destroyed with the animation, but if anything ever looks wrong during a switch, this switch is the first thing to try.
 
+### Applications
+
+| Option | Default | What it does | Turn it off if… |
+| --- | --- | --- | --- |
+| **Alt+Tab order** | on | Sorts apps by most recently used, whatever workspace they are on | You prefer GNOME's default, which puts apps with a visible window first |
+
+Parking a window minimizes it, and GNOME's app switcher deliberately sorts an app whose windows are all minimized behind every app that still has something on screen. That is the right rule for a window you minimized by hand and the wrong one for a window sitting on another workspace — which is the app Alt+Tab is supposed to take you back to. Off, GNOME's ordering is left exactly as it is.
+
 ### Troubleshooting
 
 | Option | Default | What it does |

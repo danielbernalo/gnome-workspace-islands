@@ -85,6 +85,7 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
 
         page.add(group);
         page.add(this._feelGroup(settings));
+        page.add(this._applicationsGroup(settings));
         page.add(this._diagnosticsGroup());
 
         const debugGroup = new Adw.PreferencesGroup({ title: _('Troubleshooting') });
@@ -131,6 +132,34 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
             settings.bind(key, row, 'active', Gio.SettingsBindFlags.DEFAULT);
             group.add(row);
         }
+
+        return group;
+    }
+
+    /**
+     * The one setting that reaches outside the workspaces themselves.
+     *
+     * Parking a window minimizes it, and GNOME's app switcher sorts an app
+     * whose windows are all minimized behind everything still on screen — so
+     * the app you just left stops being the app Alt+Tab returns to. It gets a
+     * switch rather than an assumption, because it changes how something
+     * outside the workspaces behaves.
+     */
+    _applicationsGroup(settings) {
+        const group = new Adw.PreferencesGroup({
+            title: _('Applications'),
+            description: _('How apps are ordered in GNOME’s switcher.'),
+        });
+
+        const row = new Adw.SwitchRow({
+            title: _('Alt+Tab order'),
+            subtitle: _('Sorts apps by most recently used, regardless of ' +
+                'workspace visibility. Off: GNOME’s default, which prioritises ' +
+                'visible apps.'),
+        });
+        settings.bind('alt-tab-mru-order', row, 'active',
+            Gio.SettingsBindFlags.DEFAULT);
+        group.add(row);
 
         return group;
     }
