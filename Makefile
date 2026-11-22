@@ -2,6 +2,13 @@ UUID    := workspace-islands@danielbernalo.github.io
 SRC     := $(CURDIR)/src
 TARGET  := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 
+# The Python embedded below reads these from its environment rather than
+# having them pasted into its source. A checkout path is whatever the user
+# cloned into, and a quote in it would otherwise end a string literal and
+# run the rest as code.
+export WI_ROOT := $(CURDIR)
+export WI_UUID := $(UUID)
+
 .PHONY: help schemas skills install uninstall enable disable doctor pack nested logs status
 
 help:
@@ -31,9 +38,9 @@ skills:
 	@python3 -c "$$SKILLS_SCRIPT"
 
 define SKILLS_SCRIPT
-import hashlib, io, json, pathlib, re, sys, tarfile, urllib.request
+import hashlib, io, json, os, pathlib, re, shutil, sys, tarfile, tempfile, urllib.request
 
-root = pathlib.Path('$(CURDIR)')
+root = pathlib.Path(os.environ['WI_ROOT'])
 lock = json.loads((root / 'skills-lock.json').read_text())
 
 for name, entry in lock['skills'].items():
@@ -47,32 +54,52 @@ for name, entry in lock['skills'].items():
         blob = response.read()
 
     target = root / '.agents' / 'skills' / name
-    extracted = 0
+    target.parent.mkdir(parents=True, exist_ok=True)
 
-    with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
-        for member in tar.getmembers():
-            parts = pathlib.PurePosixPath(member.name).parts[1:]
-            prefix = pathlib.PurePosixPath(inner).parts
+    # Extracted beside the target and moved into place only once verified.
+    # `.claude/skills/<name>` already points at the target from an earlier
+    # run, so writing there directly would let an agent load files the hash
+    # check is about to reject.
+    staging = pathlib.Path(tempfile.mkdtemp(prefix='.%s-' % name, dir=target.parent))
+    try:
+        extracted = 0
 
-            if not member.isfile() or parts[:len(prefix)] != prefix:
-                continue
+        with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
+            for member in tar.getmembers():
+                parts = pathlib.PurePosixPath(member.name).parts[1:]
+                prefix = pathlib.PurePosixPath(inner).parts
 
-            out = target.joinpath(*parts[len(prefix):])
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_bytes(tar.extractfile(member).read())
-            extracted += 1
+                if not member.isfile() or parts[:len(prefix)] != prefix:
+                    continue
 
-    if not extracted:
-        raise SystemExit('  nothing matched %s in the archive' % inner)
+                relative = parts[len(prefix):]
+                if not relative or any(part in ('', '.', '..') or '/' in part for part in relative):
+                    raise SystemExit('  refusing archive member %r' % member.name)
+
+                out = staging.joinpath(*relative)
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_bytes(tar.extractfile(member).read())
+                extracted += 1
+
+        if not extracted:
+            raise SystemExit('  nothing matched %s in the archive' % inner)
+
+        skill = staging / 'SKILL.md'
+        digest = hashlib.sha256(skill.read_bytes()).hexdigest()
+
+        if digest != entry['computedHash']:
+            raise SystemExit(
+                '  hash mismatch: locked %s, got %s\n'
+                '  upstream moved under the pinned ref, which should not happen'
+                % (entry['computedHash'][:12], digest[:12]))
+
+        if target.exists():
+            shutil.rmtree(target)
+        staging.rename(target)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
     skill = target / 'SKILL.md'
-    digest = hashlib.sha256(skill.read_bytes()).hexdigest()
-
-    if digest != entry['computedHash']:
-        raise SystemExit(
-            '  hash mismatch: locked %s, got %s\n'
-            '  upstream moved under the pinned ref, which should not happen'
-            % (entry['computedHash'][:12], digest[:12]))
 
     # Re-apply the local patch. See "patched" in skills-lock.json.
     text = skill.read_text()
@@ -101,7 +128,7 @@ endef
 export SKILLS_SCRIPT
 
 schemas:
-	glib-compile-schemas $(SRC)/schemas
+	glib-compile-schemas "$(SRC)/schemas"
 
 install: schemas
 	@if [ -e "$(TARGET)" ] && [ ! -L "$(TARGET)" ]; then \
@@ -122,9 +149,10 @@ uninstall:
 # dconf, not gsettings: in some shells gsettings silently falls back to an
 # in-memory backend, reporting schema defaults on read and dropping writes.
 ENABLED_KEY := /org/gnome/shell/enabled-extensions
+export WI_ENABLED_KEY := $(ENABLED_KEY)
 
 enable:
-	@python3 -c "import ast,subprocess as s; k='$(ENABLED_KEY)'; u='$(UUID)'; \
+	@python3 -c "import ast,os,subprocess as s; k=os.environ['WI_ENABLED_KEY']; u=os.environ['WI_UUID']; \
 c=s.run(['dconf','read',k],capture_output=True,text=True).stdout.strip(); \
 l=ast.literal_eval(c) if c else []; \
 l.append(u) if u not in l else None; \
@@ -132,7 +160,7 @@ s.run(['dconf','write',k,repr(l)]); \
 print('enabled: '+u+'  (log out and back in for a real session)')"
 
 disable:
-	@python3 -c "import ast,subprocess as s; k='$(ENABLED_KEY)'; u='$(UUID)'; \
+	@python3 -c "import ast,os,subprocess as s; k=os.environ['WI_ENABLED_KEY']; u=os.environ['WI_UUID']; \
 c=s.run(['dconf','read',k],capture_output=True,text=True).stdout.strip(); \
 l=ast.literal_eval(c) if c else []; \
 l=[x for x in l if x!=u]; \
@@ -205,11 +233,11 @@ pack: schemas
 	@python3 -c "$$PACK_SCRIPT"
 
 define PACK_SCRIPT
-import pathlib, zipfile
+import os, pathlib, zipfile
 
-root = pathlib.Path('$(CURDIR)')
+root = pathlib.Path(os.environ['WI_ROOT'])
 src = root / 'src'
-out = root / '$(UUID).shell-extension.zip'
+out = root / (os.environ['WI_UUID'] + '.shell-extension.zip')
 
 members = sorted(
     p for p in src.rglob('*')
