@@ -181,7 +181,11 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
             fix.visible = !ok;
         };
 
-        mutter.connect(`changed::${ONLY_ON_PRIMARY}`, refresh);
+        // The settings object can outlive this window: the Extensions app keeps
+        // running after it closes, and a change then would write to disposed
+        // widgets. Tie the handler to the group's lifetime.
+        const changedId = mutter.connect(`changed::${ONLY_ON_PRIMARY}`, refresh);
+        group.connect('destroy', () => mutter.disconnect(changedId));
         refresh();
 
         return group;

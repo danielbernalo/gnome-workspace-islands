@@ -325,6 +325,12 @@ export class Indicator {
         if (this._dots?.get_parent())
             return;
 
+        // A panel rebuild can unparent ours without destroying it. Nothing
+        // else holds it after that, so replacing the reference alone would
+        // leak the actor and its adjustment on every rebuild.
+        this._dots?.destroy();
+        this._dots = null;
+
         const activities = Main.panel.statusArea?.activities;
         if (!activities) {
             // Some session modes have no Activities button. Nothing to take
