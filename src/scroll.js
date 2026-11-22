@@ -135,7 +135,11 @@ export function unpatch() {
  * but "harmless leak" is not a category this is worth having.
  */
 function throttle(windowManager) {
-    releaseScroll();
+    // Only the pending source, never the flag. releaseScroll() would also set
+    // `Main.wm._canScroll` back to true — and Main.wm *is* the windowManager
+    // that just set it to false, so the hold would be undone before it began
+    // and every notch would switch.
+    dropThrottle();
 
     throttleId = GLib.timeout_add_once(
         GLib.PRIORITY_DEFAULT, SCROLL_TIMEOUT_MS, () => {
@@ -144,12 +148,17 @@ function throttle(windowManager) {
         });
 }
 
-/** Drop a pending throttle and hand the wheel straight back to the shell. */
-function releaseScroll() {
+/** Forget a pending throttle without touching the flag it would restore. */
+function dropThrottle() {
     if (throttleId) {
         GLib.Source.remove(throttleId);
         throttleId = 0;
     }
+}
+
+/** Drop a pending throttle and hand the wheel straight back to the shell. */
+function releaseScroll() {
+    dropThrottle();
 
     // Unconditionally, not only when a throttle was pending: unloading in the
     // middle of the hold would otherwise leave the shell's own wheel jammed

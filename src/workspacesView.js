@@ -323,6 +323,14 @@ class IslandsThumbnails extends St.Widget {
         this._indicator = new St.Widget({
             style_class: 'workspace-thumbnail-indicator',
         });
+
+        // Hidden from pick, as dnd.js does with its own drag actor. DND picks
+        // with PickMode.ALL, non-reactive actors included, so the frame lying
+        // on top of the active thumbnail is what a drop lands on — and its
+        // parent, this strip, has no `_delegate`. GNOME's ThumbnailsBox gets
+        // away without this because the box holding its indicator is itself
+        // the drop target; here the targets are the thumbnails underneath.
+        Shell.util_set_hidden_from_pick(this._indicator, true);
         this.add_child(this._indicator);
 
         this.setActive(state.activeIndex);
@@ -445,6 +453,7 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         this._monitorIndex = monitorIndex;
         this._monitor = Main.layoutManager.monitors[monitorIndex];
         this._refreshId = 0;
+        this._pendingIndex = null;
 
         this._workspace[VIRTUAL] = first;
         this._pages = [this._workspace];
@@ -574,21 +583,42 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         return this._pages.length;
     }
 
-    /** Animate to a workspace and commit it. */
-    activate(index) {
-        if (index === this._state.activeIndex) {
-            this._scrollAdjustment.ease(index, {
-                mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
-                duration: WORKSPACE_SWITCH_TIME,
-            });
-            return;
-        }
+    /**
+     * Animate to a workspace and commit it when the animation lands.
+     *
+     * The target is remembered rather than only captured in onComplete,
+     * because the ease can be cut short with the switch already on screen:
+     * closing the overview destroys this view, and a destroyed actor's
+     * transitions end unfinished, with no onComplete. See
+     * prepareToLeaveOverview.
+     *
+     * @param {number} index
+     * @param {number} [duration] a swipe passes its tracker's, so the snap
+     *   under the fingers and the switch are one animation
+     */
+    activate(index, duration = WORKSPACE_SWITCH_TIME) {
+        this._pendingIndex = index;
 
         this._scrollAdjustment.ease(index, {
             mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
-            duration: WORKSPACE_SWITCH_TIME,
-            onComplete: () => this._onActivate(index),
+            duration,
+            onComplete: () => this._commitPending(),
         });
+    }
+
+    /** Drop a switch in flight without committing it; a gesture is taking over. */
+    cancelSwitch() {
+        this._pendingIndex = null;
+        this._scrollAdjustment.remove_transition('value');
+    }
+
+    /** Commit the switch in flight, if there is one and it goes anywhere. */
+    _commitPending() {
+        const index = this._pendingIndex;
+        this._pendingIndex = null;
+
+        if (Number.isInteger(index) && index !== this._state.activeIndex)
+            this._onActivate(index);
     }
 
     /** Ported from WorkspacesView._getSpacing, minus the fit-mode term. */
@@ -691,7 +721,13 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         let x = pagesBox.x1 + (pagesWidth - pageWidth) / 2 -
             value * (pageWidth + spacing);
 
-        for (const page of this._pages) {
+        // Ported with the value mapping above, as its other half: the shell
+        // also reverses the list for RTL. With the value mapped and the pages
+        // still laid out in index order, the page centred is the mirror image
+        // of the active one.
+        const pages = rtl ? [...this._pages].reverse() : this._pages;
+
+        for (const page of pages) {
             const childBox = new Clutter.ActorBox();
             childBox.set_origin(Math.round(x), pagesBox.y1);
             childBox.set_size(Math.round(pageWidth), pagesHeight);
@@ -705,7 +741,22 @@ class IslandsWorkspacesView extends ExtraWorkspaceView {
         return this._pages?.[this._state.activeIndex] ?? this._workspace;
     }
 
+    /**
+     * The overview starts closing, and this view will not outlive it.
+     *
+     * A switch still animating is committed now, not dropped: the page it
+     * was heading for is what the overview showed, so it is what the desktop
+     * comes back to. The shell's own view does the same on the primary, where
+     * the adjustment it eases survives the close. Removing the transition
+     * reports it unfinished, so its onComplete cannot commit a second time.
+     */
     prepareToLeaveOverview() {
+        if (Number.isInteger(this._pendingIndex)) {
+            this._scrollAdjustment.remove_transition('value');
+            this._scrollAdjustment.value = this._pendingIndex;
+            this._commitPending();
+        }
+
         for (const page of this._pages ?? [])
             page.prepareToLeaveOverview();
     }

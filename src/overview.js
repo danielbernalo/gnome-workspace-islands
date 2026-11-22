@@ -6,7 +6,7 @@
  * place because the list of them *is* the maintenance burden — when a GNOME
  * update breaks this extension, it will almost certainly break here.
  *
- * There are four, and one of them is not an override at all — see the swipe.
+ * There are five, and one of them is not an override at all — see the swipe.
  *
  * ## Workspace._isOverviewWindow — which page a window belongs to
  *
@@ -18,6 +18,14 @@
  *
  * For any Workspace we did not build — the primary monitor's, or a secondary
  * one we do not manage — it keeps its old job of hiding what we parked.
+ *
+ * ## Workspace._shouldLeaveOverview — what clicking a page means
+ *
+ * A page with no MetaWorkspace always answers "leave", so clicking the
+ * neighbour peeking in at the edge closed the overview where it was instead of
+ * switching to it, the way the primary monitor does. Asked of a virtual page,
+ * it now switches and stays. `_onCloneSelected` asks the same question for a
+ * window click, which keeps going straight to its window.
  *
  * ## SecondaryMonitorDisplay._updateWorkspacesView — which view to build
  *
@@ -70,6 +78,7 @@ import Shell from 'gi://Shell';
 import { InjectionManager } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as DND from 'resource:///org/gnome/shell/ui/dnd.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as OverviewControls from 'resource:///org/gnome/shell/ui/overviewControls.js';
 import * as SwipeTracker from 'resource:///org/gnome/shell/ui/swipeTracker.js';
 import { Workspace, WorkspaceBackground } from 'resource:///org/gnome/shell/ui/workspace.js';
 import {
@@ -108,6 +117,7 @@ export function patch({ getState, onActivate, onDrop, log }) {
 
     patchWindowFilter();
     patchDropTarget();
+    patchPageClick();
     patchOrphanedBackground();
     patchSecondaryView(getState, onActivate, onDrop);
     takeOverGesture(getState, log);
@@ -237,6 +247,78 @@ function patchDropTarget() {
             // page carries that this module put there.
             virtual.onDrop?.(virtual.index, source.metaWindow, this.monitorIndex);
             return true;
+        });
+}
+
+/**
+ * Make a click on a neighbouring page switch to it, as on the primary monitor.
+ *
+ * The page's click handler is a closure built in `Workspace._init`, so it
+ * cannot be replaced — but it decides through a live method lookup:
+ *
+ *     const leaveOverview = this._shouldLeaveOverview();
+ *     this.metaWorkspace?.activate(global.get_current_time());
+ *     if (leaveOverview)
+ *         Main.overview.hide();
+ *
+ * and `_shouldLeaveOverview` returns true outright when `metaWorkspace` is
+ * null, which every virtual page's is. So the switch is made here, as the side
+ * effect the shell gets from `metaWorkspace.activate()`, and the answer is
+ * "stay". The shell's other two rules are kept: the centred page and anything
+ * clicked from the app grid still leave the overview.
+ *
+ * The view is reached through the page's parent rather than a callback on the
+ * tag. Every page is a direct child of its view, rebuilt ones included, so
+ * this needs nothing from the code that builds them.
+ */
+function patchPageClick() {
+    const proto = Workspace?.prototype;
+
+    if (!proto || typeof proto._shouldLeaveOverview !== 'function' ||
+        typeof proto._onCloneSelected !== 'function') {
+        console.warn('workspace-islands: Workspace._shouldLeaveOverview not found — ' +
+            'clicking a neighbouring page will close the overview instead of switching');
+        return;
+    }
+
+    injector.overrideMethod(proto, '_shouldLeaveOverview',
+        originalMethod => function () {
+            const virtual = tagFor(this);
+            if (!virtual)
+                return originalMethod.call(this);
+
+            const active = virtual.index === virtual.state.activeIndex;
+
+            if (this._overviewAdjustment.value >
+                OverviewControls.ControlsState.WINDOW_PICKER)
+                return true;
+
+            const view = this.get_parent();
+            if (!(view instanceof VirtualWorkspacesView))
+                return true;
+
+            // The active page too, not only a neighbour. A switch can still be
+            // animating away from it, and the view commits that switch when
+            // the overview closes; a click here means "this one", so it has
+            // to replace the switch in flight, and committing the active
+            // index is a no-op.
+            view.activate(virtual.index);
+            return active;
+        });
+
+    // A window click asks the same question, and "stay" would turn it into a
+    // workspace switch. For a virtual page it keeps doing what it did before
+    // the override above existed — the original's answer was always "leave" —
+    // and goes to the window, whose un-minimize brings its workspace along.
+    // Bound per clone as the clone is created, which is after this is in place.
+    injector.overrideMethod(proto, '_onCloneSelected',
+        originalMethod => function (clone, time) {
+            if (!tagFor(this)) {
+                originalMethod.call(this, clone, time);
+                return;
+            }
+
+            Main.activateWindow(clone.metaWindow, time);
         });
 }
 
@@ -372,8 +454,10 @@ function takeOverGesture(getState, log) {
             return;
         }
 
+        // Supersedes a snap still in flight instead of committing it: this
+        // gesture ends with a target of its own.
+        view.cancelSwitch();
         const adjustment = view.scrollAdjustment;
-        adjustment.remove_transition('value');
 
         t.orientation = global.workspace_manager.layout_rows === -1
             ? Clutter.Orientation.VERTICAL
@@ -408,11 +492,10 @@ function takeOverGesture(getState, log) {
 
         gestureView = null;
 
-        view.scrollAdjustment.ease(endProgress, {
-            mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
-            duration,
-            onComplete: () => view.activate(Math.round(endProgress)),
-        });
+        // The snap itself is the switch animation, at the tracker's duration.
+        // Easing first and activating after would chain a second ease, and
+        // the commit with it, well past an overview that may close meanwhile.
+        view.activate(Math.round(endProgress), duration);
     });
 
     ourTracker = tracker;
@@ -429,6 +512,15 @@ function restoreGesture() {
 
     // See slide.js for why disabling comes before destroying.
     ourTracker.enabled = false;
+
+    // TouchpadSwipeGesture connects 'event::touchpad' to the actor it was
+    // given but its destroy() disconnects from global.stage only. Ours is on
+    // overviewGroup, so without this every enable leaves one more handler
+    // there for the rest of the session. One private hop, to the object that
+    // owns the connection.
+    const touchpadGesture = ourTracker._touchpadGesture;
+    if (touchpadGesture)
+        Main.layoutManager.overviewGroup?.disconnectObject(touchpadGesture);
     ourTracker.destroy();
 
     gestureDisplay = null;
