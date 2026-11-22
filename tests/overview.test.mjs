@@ -1,15 +1,4 @@
-/**
- * The overview seams, driven through the real overrides and the real view.
- *
- * The default stubs swallow everything a shell module is asked for, including
- * the InjectionManager and GObject.registerClass, so neither the overrides nor
- * the view's methods would ever run. These tests swap in just enough of the
- * shell for overview.js to patch real prototypes and for VirtualWorkspacesView
- * to be a plain class whose methods can be called on a hand-built instance.
- *
- * Each fake mirrors the shell 51 behaviour the code depends on, and says so
- * where that behaviour is the point of the test.
- */
+// Fakes let overview.js patch real prototypes and make VirtualWorkspacesView a plain class.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,8 +6,6 @@ import assert from 'node:assert/strict';
 const fakes = {};
 globalThis.__wiFakes = fakes;
 
-
-/** An actor with just connectObject/disconnectObject, keyed by owner. */
 class FakeActor {
     constructor() {
         this.handlers = [];
@@ -84,11 +71,7 @@ class InjectionManager {
     }
 }
 
-/**
- * TouchpadSwipeGesture as shell 51 has it: connected to the actor it was given,
- * disconnected from the *stage* on destroy. The asymmetry is the bug under
- * test, so it is reproduced exactly.
- */
+// As in shell 51: connects to its actor but disconnects from the stage, the bug under test.
 class FakeTouchpadGesture {
     constructor(actor) {
         actor.connectObject('event::touchpad', () => {}, this);
@@ -126,7 +109,6 @@ class FakeSwipeTracker {
     }
 }
 
-/** The shell 51 click paths, with the original's answer marked. */
 class Workspace {
     _shouldLeaveOverview() {
         return 'original';
@@ -196,15 +178,10 @@ fakes['resource:///org/gnome/shell/misc/util.js'] = {
     lerp: (start, end, progress) => start + progress * (end - start),
 };
 
-
 const Overview = await import('../src/overview.js');
 const { VirtualWorkspacesView, VIRTUAL } = await import('../src/workspacesView.js');
 
-/**
- * An St.Adjustment's `value` with one ease in flight at a time, completed the
- * way shell 51's _makeEaseCallback does: onComplete only when it finished,
- * never when it was removed or its actor destroyed.
- */
+// Like shell 51's _makeEaseCallback: onComplete runs only for a finished ease.
 class FakeAdjustment {
     constructor(value, upper) {
         this.value = value;
@@ -246,7 +223,6 @@ function fakePage() {
     };
 }
 
-/** A view without its constructor: the state and fields its methods read. */
 function fakeView({ size = 3, activeIndex = 0 } = {}) {
     const state = { size, activeIndex };
     const commits = [];
@@ -271,7 +247,6 @@ function fakeView({ size = 3, activeIndex = 0 } = {}) {
     return { view, state, commits };
 }
 
-/** Patch with one managed secondary monitor (index 1) showing `view`. */
 function setUp(view, state) {
     const shellTracker = { enabled: true };
     Object.assign(display, {
@@ -306,8 +281,6 @@ function swipe(tracker, to, duration = 300) {
     tracker.emit('end', duration, to);
 }
 
-// --- Finding: the swipe tracker's touchpad handler outlives disable() -------
-
 test('unpatch() leaves no touchpad handler on overviewGroup', () => {
     const { view, state } = fakeView();
     const { tracker, shellTracker } = setUp(view, state);
@@ -323,8 +296,6 @@ test('unpatch() leaves no touchpad handler on overviewGroup', () => {
     assert.equal(display._swipeTracker, shellTracker, 'the shell tracker is back');
     assert.equal(shellTracker.enabled, true);
 });
-
-// --- Finding: a swipe is discarded if the overview closes mid-snap ----------
 
 test('a finished swipe commits when its snap lands, in one animation', () => {
     const { view, state, commits } = fakeView();
@@ -361,7 +332,6 @@ test('closing the overview during the snap still commits the swipe', () => {
         assert.ok(view._pages.every(page => page.left === 1),
             'every page is still told the overview is leaving');
 
-        // The view is destroyed by the end of the close; nothing commits twice.
         view.prepareToLeaveOverview();
         assert.deepEqual(commits, [1]);
     } finally {
@@ -447,9 +417,6 @@ test('prepareToLeaveOverview() with nothing in flight only forwards to pages', (
     assert.ok(view._pages.every(page => page.left === 1));
 });
 
-// --- Finding: clicking a peeking neighbour page closes the overview ---------
-
-/** A page of `view`, the way the view builds them: tagged, and its child. */
 function fakeWorkspace(view, state, index, overviewState = 1) {
     const page = new Workspace();
     if (index !== null)
@@ -496,7 +463,6 @@ test('clicking the active page while a switch is in flight goes back to it', () 
 
         assert.equal(fakeWorkspace(view, state, 0)._shouldLeaveOverview(), true);
 
-        // The overview closing must not commit the switch the click undid.
         view.prepareToLeaveOverview();
         assert.deepEqual(commits, []);
         assert.equal(state.activeIndex, 0);
@@ -553,8 +519,6 @@ test('clicking a window on a neighbour page still goes to that window', () => {
         tearDown();
     }
 });
-
-// --- Finding: RTL centres the mirror-image page ---------------------------
 
 function allocate(view) {
     const box = new ActorBox();

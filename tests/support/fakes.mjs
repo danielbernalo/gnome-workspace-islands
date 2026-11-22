@@ -1,11 +1,4 @@
-/**
- * Stand-ins for the Meta objects the model touches.
- *
- * Only the surface src/ actually calls is implemented, and it behaves the way
- * Mutter does where that matters: a window that cannot be minimized ignores
- * minimize(), exactly like Mutter's "cannot be minimized, but something tried
- * anyways. Not having it!".
- */
+// Like Mutter, a window that cannot be minimized ignores minimize().
 
 let nextId = 1;
 

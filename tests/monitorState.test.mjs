@@ -70,11 +70,6 @@ test('Registry builds a usable state from a malformed saved entry', () => {
     assert.equal(state.size, 4);
 });
 
-// ---------------------------------------------------------------------------
-// Window model: where windows land, and what is on screen afterwards.
-// ---------------------------------------------------------------------------
-
-/** A window carrying a placement note for `HDMI-1`, as a previous life left it. */
 function noted(index, options) {
     const window = new FakeWindow(options);
     stamp(window, 'HDMI-1', index);
@@ -85,8 +80,6 @@ const app = wmClass => new FakeWindow({ wmClass });
 
 for (const order of [[2, 1, 0], [0, 1, 2]]) {
     test(`dynamic: windows re-adopted by note keep their workspace (order ${order})`, () => {
-        // enable() after a lock: the saved state only knows activeIndex 0, so
-        // the monitor is born at MIN_SIZE and the notes have to grow it.
         const state = dynamicState();
         state.restore({ activeIndex: 0 });
 
@@ -137,12 +130,9 @@ test('dynamic: restored app rules survive the enable-time reconcile', () => {
     state.restore({ activeIndex: 0, apps: { slack: 1, chrome: 2, term: 3 } });
     state.reconcileSize();
 
-    // No windows yet, so the workspaces grown for the rules are gone...
     assert.equal(state.size, 2);
-    // ...but every rule is kept, persisted past the end in its saved order.
     assert.deepEqual(state.appRules, { slack: 2, chrome: 3, term: 4 });
 
-    // Each app opens on a fresh workspace of its own, in opening order.
     const chrome = app('chrome');
     const slack = app('slack');
     const term = app('term');
@@ -151,7 +141,6 @@ test('dynamic: restored app rules survive the enable-time reconcile', () => {
     assert.equal(state.track(term), 3);
     assert.equal(state.size, 5);
 
-    // And a second window of an app joins the first.
     assert.equal(state.track(app('chrome')), 1);
     assert.deepEqual(state.appRules, { chrome: 1, slack: 2, term: 3 });
     for (const window of [chrome, slack, term])
@@ -172,7 +161,6 @@ test('dynamic: kept app rules round-trip through a save and a restore', () => {
 });
 
 test('dynamic: pending rules round-trip while the user sits on the spare', () => {
-    // Login: one window, two rules whose apps have not started yet.
     const first = dynamicState();
     first.restore({ activeIndex: 0, apps: { foo: 1, bar: 2 } });
     const a = app('a');
@@ -181,7 +169,6 @@ test('dynamic: pending rules round-trip while the user sits on the spare', () =>
     first.switchTo(1);
     assert.equal(first.size, 2);
 
-    // A lock: disable() saves, enable() restores and re-adopts.
     const saved = { activeIndex: first.activeIndex, apps: first.appRules };
     const second = dynamicState();
     second.restore(saved);
@@ -189,14 +176,12 @@ test('dynamic: pending rules round-trip while the user sits on the spare', () =>
     second.reapply();
     second.reconcileSize();
 
-    // Same arrangement: no second empty spare behind the one on screen.
     assert.equal(second.size, 2);
     assert.equal(second.activeIndex, 1);
     assert.equal(second.indexOf(a), 0);
     assert.equal(a.minimized, true);
     assert.deepEqual(second.appRules, first.appRules);
 
-    // The next pending app opens where the user is looking, and is shown.
     const foo = app('foo');
     assert.equal(second.track(foo), 1);
     assert.equal(foo.minimized, false);
@@ -218,7 +203,6 @@ test('dynamic: an empty active workspace before an occupied one keeps the spare'
 });
 
 test('dynamic: a rule whose app has a window keeps its workspace at enable', () => {
-    // A lock: the app's window is still there, on the workspace its rule names.
     const state = dynamicState();
     state.restore({ activeIndex: 0, apps: { slack: 1 } });
     state.track(noted(1, { wmClass: 'slack' }));
@@ -326,11 +310,9 @@ test('a second detach keeps the record of windows owed a ride home', () => {
     assert.equal(state.wasDetached(window), true);
     assert.equal(window.minimized, false);
 
-    // Another layout change while the monitor is still away.
     state.detach();
     assert.equal(state.wasDetached(window), true);
 
-    // Coming back still clears it.
     state.track(window);
     assert.equal(state.wasDetached(window), false);
     assert.equal(state.indexOf(window), 1);
@@ -357,7 +339,6 @@ test('turning dynamic on adds an empty spare after an occupied last workspace', 
 
     registry.setDynamic(true);
 
-    // The empty middle collapses, and the window that was last gets a spare.
     assert.equal(state.size, 3);
     assert.equal(state.indexOf(window), 1);
     assert.equal(state.windowsOn(2).length, 0);

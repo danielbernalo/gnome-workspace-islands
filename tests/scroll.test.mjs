@@ -1,19 +1,10 @@
-/**
- * Super + wheel on a secondary monitor, driven through the real override.
- *
- * The default stubs swallow everything a shell module is asked for, including
- * the InjectionManager — so an override would install into nothing and never
- * run. These tests swap in just enough of the shell for scroll.js to patch a
- * real prototype: a WindowManager that is also `Main.wm`, the way it is in the
- * shell, and a GLib whose timers only fire when the test says so.
- */
+// Default stubs swallow the InjectionManager, so these fakes let scroll.js patch a real prototype.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 const fakes = {};
 globalThis.__wiFakes = fakes;
-
 
 const Clutter = {
     ScrollDirection: { UP: 0, DOWN: 1, LEFT: 2, RIGHT: 3, SMOOTH: 4 },
@@ -83,12 +74,10 @@ fakes['resource:///org/gnome/shell/extensions/extension.js'] = { InjectionManage
 fakes['resource:///org/gnome/shell/ui/main.js'] = { wm };
 fakes['resource:///org/gnome/shell/ui/windowManager.js'] = { WindowManager };
 
-
 const Scroll = await import('../src/scroll.js');
 
 const notch = direction => ({ get_scroll_direction: () => direction });
 
-/** Patch with a secondary-monitor state whose switches the test records. */
 function setUp({ size = 4, activeIndex = 0, secondary = true } = {}) {
     const state = { connector: 'HDMI-1', size, activeIndex };
     const switches = [];

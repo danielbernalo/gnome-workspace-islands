@@ -1,13 +1,4 @@
-/**
- * Workspace Islands — independent per-monitor workspaces for GNOME Shell.
- *
- * Design in one paragraph: keep `workspaces-only-on-primary = true` so windows
- * on secondary monitors are sticky and untouched by native workspace switches,
- * then group those windows into virtual workspaces and control which group is
- * visible. No Clutter clones, no rendering pipeline changes, no tiling.
- *
- * See visibility.js for why hiding is done by minimizing.
- */
+// Groups sticky secondary-monitor windows (workspaces-only-on-primary) into virtual workspaces.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -32,38 +23,15 @@ const MUTTER_SCHEMA = 'org.gnome.mutter';
 const ONLY_ON_PRIMARY = 'workspaces-only-on-primary';
 const PAPERWM_UUID = 'paperwm@paperwm.github.com';
 
-/**
- * The schema only defines `switch-to-1` through `switch-to-8` — the same
- * ceiling `prefs.js`'s shortcut list assumes. In dynamic mode there is no
- * setting to read a smaller number from (the static count is irrelevant and
- * greyed out in prefs), so this is the count to bind up to instead.
- */
+// The schema defines only switch-to-1..8; dynamic mode has no smaller count to bind up to.
 const MAX_DIRECT_SWITCH_KEYS = 8;
 
-/**
- * How long to wait for the monitor layout to stop moving.
- *
- * `monitors-changed` is not one event. A resume or a DP-MST dock emits it two
- * or three times within a few tens of milliseconds, and at least one of those
- * reports a layout that never really existed — zero monitors, or only the
- * built-in panel. Acting on the first fire re-adopts every window against a
- * layout that is about to be replaced.
- *
- * The timer is rescheduled on every fire, so this is the quiet period after the
- * last change rather than a fixed cost. An idle would not do: the fires arrive
- * across separate main loop iterations, so an idle lands in the middle of one.
- *
- * Only the re-adoption waits. Releasing the windows of a monitor that just went
- * away happens immediately — see the handler.
- */
+// Debounce for monitors-changed bursts, which report bogus interim layouts across loop iterations.
 const SETTLE_DELAY_MS = 300;
 
 export default class WorkspaceIslands extends Extension {
     enable() {
-        // Module state outlives the extension object — GJS keeps the module
-        // loaded across a disable/enable cycle — and displays can come and go
-        // while this is off. The cache below is the one piece of that state
-        // that would be wrong rather than merely stale.
+        // The module outlives disable(), and its connector cache goes stale while displays change.
         invalidateConnectors();
 
         this._settings = this.getSettings();
@@ -87,11 +55,7 @@ export default class WorkspaceIslands extends Extension {
         this._checkPreconditions();
         this._adoptExistingWindows();
 
-        // Existing windows were adopted against the restored active index, so
-        // bring the screen in line with it before anyone looks at it. Also
-        // reconciles size: a saved arrangement can grow a state to fit indices
-        // it doesn't have windows for this session, leaving trailing empties
-        // dynamic mode never got a chance to trim reactively.
+        // Restored state may hold trailing empty workspaces that dynamic mode never got to trim.
         for (const state of this._registry.states) {
             state.reapply();
             state.reconcileSize();
@@ -100,18 +64,12 @@ export default class WorkspaceIslands extends Extension {
         this._connectSignals();
         this._bindKeys();
 
-        // Takes over the panel's own workspace dots rather than adding a second
-        // indicator beside them. See indicator.js.
         this._indicator = new Indicator({
             getFocusedState: () => this._registry?.forFocusedMonitor() ?? null,
         });
 
-        // The panel only exists on the primary monitor. This one appears on the
-        // monitor that actually changed.
         this._popup = new SwitcherPopup(this._settings);
 
-        // Owns both the touchpad gesture and the slide. See slide.js for why
-        // those are one thing and not two.
         this._slide = new SlideController({
             settings: this._settings,
             getState: index => this._registry?.forMonitorIndex(index) ?? null,
@@ -123,14 +81,9 @@ export default class WorkspaceIslands extends Extension {
 
         AltTabFilter.patch();
 
-        // Super + wheel on the desktop. The overview has its own scroll seam
-        // and already worked; this is the one outside it.
         ScrollFilter.patch({
             getState: () => this._registry?.forPointerMonitor() ?? null,
 
-            // Through _requestSwitch, so the wheel slides exactly like the
-            // shortcuts and the gesture do. The OSD is left to announce it, as
-            // it does on the primary monitor.
             onScroll: (state, index, forward) =>
                 this._requestSwitch(state, index, forward),
 
@@ -140,9 +93,6 @@ export default class WorkspaceIslands extends Extension {
         OverviewFilter.patch({
             getState: index => this._registry?.forMonitorIndex(index) ?? null,
 
-            // The overview is already showing the result, so this commits
-            // silently: no minimize animation to play under it, no OSD to
-            // announce what the user just watched themselves choose.
             onActivate: (state, index) =>
                 this._commitSwitch(state, index, { announce: false }),
 
@@ -152,9 +102,7 @@ export default class WorkspaceIslands extends Extension {
             log: message => this._log(message),
         });
 
-        // Unconditional, not behind debug-logging: when nothing appears to
-        // happen, the first question is always whether this even loaded, and
-        // "zero secondary monitors" is the single most likely answer.
+        // Deliberately not behind debug-logging: whether it loaded is the first thing to check.
         console.log(`workspace-islands: enabled — ` +
             `${this._registry.states.length} secondary monitor(s), ` +
             `${ONLY_ON_PRIMARY}=${this._mutterSettings.get_boolean(ONLY_ON_PRIMARY)}`);
@@ -165,18 +113,13 @@ export default class WorkspaceIslands extends Extension {
         ScrollFilter.unpatch();
         OverviewFilter.unpatch();
 
-        // Before the registry goes: a settle firing into a half-dismantled
-        // extension has nothing left to settle against. Nothing is left
-        // half-done by dropping it — the synchronous half of the handler has
-        // already released every window the detach touched, and restoreAll()
-        // below covers the rest.
+        // Before the registry goes, so a settle never fires into a half-dismantled extension.
         if (this._settleId) {
             GLib.Source.remove(this._settleId);
             this._settleId = 0;
         }
 
-        // Flush before tearing anything down, or the last couple of seconds of
-        // changes are lost on every logout.
+        // Flush before tearing anything down, or the last pending changes are lost on logout.
         this._persistence?.flush(this._registry);
         this._persistence?.destroy();
         this._persistence = null;
@@ -187,16 +130,11 @@ export default class WorkspaceIslands extends Extension {
         this._popup?.destroy();
         this._popup = null;
 
-        // Before restoreAll(): an in-flight slide holds windows un-minimized
-        // behind a cover, and tearing that down has to settle them first.
+        // Before restoreAll(): an in-flight slide holds windows un-minimized behind a cover.
         this._slide?.destroy();
         this._slide = null;
 
-        // Restoration is unconditional. A window left hidden after unload is
-        // invisible and unreachable — nothing else here matters more. Every
-        // window the shell has, not only the ones a workspace still holds:
-        // the tag can outlive the membership, and nothing after this would
-        // ever look at such a window again.
+        // Every shell window, not only tracked ones: the hidden tag can outlive the membership.
         this._registry?.restoreAll(this._shellWindows());
 
         this._keys?.removeAll();
@@ -218,19 +156,8 @@ export default class WorkspaceIslands extends Extension {
         this._settings = null;
     }
 
-    /**
-     * The model only holds while secondary-monitor windows are sticky. If the
-     * setting is off, or PaperWM is running (it forces the setting off — see
-     * its patches.js), say so loudly instead of misbehaving quietly.
-     */
     _checkPreconditions() {
-        // enable() is no longer a once-per-session event. The shell rebases the
-        // extension order whenever it disables one, so locking the screen tears
-        // this extension down and builds it back up once for every user-only
-        // extension ahead of it in the list — and it does that while locked,
-        // now that unlock-dialog is declared. Unguarded, a misconfiguration
-        // would queue half a dozen identical notifications at every lock, all
-        // of which arrive at once when the user comes back.
+        // Locking re-runs enable() once per extension rebase; notifying then queues duplicate errors.
         if (Main.sessionMode.isLocked)
             return;
 
@@ -251,10 +178,6 @@ export default class WorkspaceIslands extends Extension {
         }
     }
 
-    /**
-     * Read the enabled list from gsettings rather than inspecting
-     * ExtensionManager state, whose enum values are shell internals.
-     */
     _isPaperwmEnabled() {
         try {
             const shell = new Gio.Settings({ schema_id: 'org.gnome.shell' });
@@ -270,7 +193,6 @@ export default class WorkspaceIslands extends Extension {
             this._trackWindow(window);
     }
 
-    /** Every window the shell is managing, whether the model holds it or not. */
     _shellWindows() {
         return global.get_window_actors()
             .map(actor => actor.meta_window)
@@ -290,55 +212,32 @@ export default class WorkspaceIslands extends Extension {
             this._onWindowLeftMonitor(window);
         });
 
-        // Mutter announces a layout change before it applies one, and it moves
-        // windows between displays before LayoutManager re-emits below. That
-        // gap is the only window in which a relocation is indistinguishable
-        // from a drag, so the flag has to be raised at the earliest possible
-        // moment rather than at the one that is convenient.
-        //
-        // A settle is scheduled here too, not only in the handler below. A
-        // configuration that is announced and then abandoned would otherwise
-        // leave the flag raised for good, and every later drag would silently
-        // start honouring old notes.
+        // Raise the flag at the earliest hint: Mutter moves windows before monitors-changed re-emits.
         this._connect(global.backend.get_monitor_manager(), 'monitors-changing', () => {
             invalidateConnectors();
             this._layoutChanging = true;
+            // Settle here too, or an announced then abandoned layout leaves the flag raised forever.
             this._scheduleSettle();
         });
 
         this._connect(Main.layoutManager, 'monitors-changed', () => {
             invalidateConnectors();
 
-            // Raised here too, not only on 'monitors-changing'. This handler
-            // schedules a settle either way, and the settle moves windows of
-            // its own (see _reclaim()); the left and entered handlers must
-            // see those as the relocation they are whether or not Mutter
-            // announced the change first.
+            // Raised here too: the settle moves windows itself and the handlers must see a relocation.
             this._layoutChanging = true;
 
-            // First, and unconditionally. A slide in flight is pinned to a
-            // monitor index and is holding windows un-minimized behind a cover;
-            // neither survives a display arriving or leaving, and it has to go
-            // while the state still holds the groups it will be settled against.
+            // First: a slide is pinned to a monitor index and holds windows un-minimized behind a cover.
             this._slide?.cancel();
 
             const live = this._registry.syncMonitors();
 
-            // Unplugged monitors next, and synchronously. Their windows are
-            // already on another display and some are still minimized by us —
-            // invisible on a monitor with no virtual workspaces to explain why.
-            // Nothing about that is deferrable: the whole point of waiting
-            // below is that we do not yet know what the layout is, and a window
-            // nobody can see is not something to be unsure about.
+            // Now, not after settling: unplugged monitors' windows may still be minimized by us.
             this._registry.pruneDetached(live);
 
-            // Everything else waits for the layout to stop moving.
             this._scheduleSettle();
         });
 
-        // The whole model collapses if this is flipped underneath us — and it
-        // does get flipped: PaperWM forces it off, and it has been found off
-        // for no traceable reason. Checking once at enable() is not enough.
+        // PaperWM and others flip this at runtime, so checking once at enable() is not enough.
         this._connect(this._mutterSettings, `changed::${ONLY_ON_PRIMARY}`, () => {
             if (this._mutterSettings.get_boolean(ONLY_ON_PRIMARY))
                 return;
@@ -360,19 +259,13 @@ export default class WorkspaceIslands extends Extension {
         this._connect(this._settings, 'changed::dynamic-virtual-workspaces', () => {
             this._registry.setDynamic(this._settings.get_boolean('dynamic-virtual-workspaces'));
 
-            // _bindKeys() reads this same setting to decide how many
-            // switch-to-N keys to register, so the toggle needs the same
-            // rebind the virtual-workspaces handler above already does.
+            // _bindKeys() reads this setting to choose how many switch-to-N keys to register.
             this._keys.removeAll();
             this._bindKeys();
             this._afterChange('dynamic workspaces toggled');
         });
 
-        // _bindKeys() skips a switch-to-N with no accelerator, so one the user
-        // assigns in preferences while this runs was never registered for
-        // Mutter to update: it has to be bound now, or it does nothing until
-        // the next enable(). Every key up to the schema's ceiling, not up to
-        // the count: _bindKeys() decides which of them apply.
+        // _bindKeys() skips unset switch-to-N keys, so one assigned while running must be bound now.
         for (let i = 1; i <= MAX_DIRECT_SWITCH_KEYS; i++) {
             this._connect(this._settings, `changed::switch-to-${i}`, () => {
                 this._keys.removeAll();
@@ -380,72 +273,31 @@ export default class WorkspaceIslands extends Extension {
             });
         }
 
-        // The hold set by _focusActive() is for the stretch in which nothing
-        // has focus. Anything taking focus ends it, so a later stretch — the
-        // last window on the primary closing, say — falls back to the pointer
-        // as it always did.
+        // Anything taking focus ends the hold _focusActive() sets for an empty workspace.
         this._connect(global.display, 'notify::focus-window', () => {
             if (global.display.focus_window)
                 this._registry?.holdFocus(null);
         });
     }
 
-    /**
-     * A window arrived on a monitor.
-     *
-     * Outside a layout change this is a drag, and the window belongs to that
-     * monitor's active virtual workspace from then on — never to whatever
-     * workspace it sat on the last time it was here. A drag is a statement
-     * about now, and honouring an old note would make the window the user is
-     * holding vanish onto a workspace they are not looking at.
-     *
-     * During a layout change it is Mutter relocating windows, and it is left
-     * alone. The burst comes out of Mutter's own monitors-changed handling,
-     * before LayoutManager has refreshed — the monitor list an index resolves
-     * against is stale, and the monitor the window came from may not have been
-     * detached yet. Filing it now could leave two monitors holding it. The
-     * settle files every window once, against the layout that turned out to
-     * be real, reading its note: nobody stated anything, and the note is the
-     * only record of where it was.
-     */
     _onWindowEnteredMonitor(window) {
+        // Mid layout change this is Mutter relocating against a stale layout; the settle files it.
         if (this._layoutSettling)
             return;
 
         this._trackWindow(window, { trustPlacement: false });
     }
 
-    /**
-     * A window left a monitor.
-     *
-     * Untracked by the note, not by forWindow(): forWindow() resolves from
-     * window.get_monitor(), which by the time this fires is the monitor the
-     * window has already *arrived at* — so the monitor it left would keep it
-     * forever and minimize it on its next switch, a window on the other screen
-     * vanishing for no reason.
-     *
-     * Not during a layout change, for the same reason the entered handler
-     * waits. Mutter re-announces every window on every layout change, moved or
-     * not, and taking them out one by one is how an unplug or a resume lost
-     * its arrangement: each untrack can collapse an empty workspace in dynamic
-     * mode and re-index the windows still filed, while the ones already gone
-     * keep notes in the old numbering; and an unplugged monitor reached
-     * detach() with nothing left to release, so its parked windows stayed
-     * minimized on the laptop screen with no workspace to come back to.
-     * Left alone, detach() releases a monitor that went away whole, stamping
-     * every note in one frame, and the settle re-adopts everything else.
-     */
     _onWindowLeftMonitor(window) {
+        // Untracking one by one mid layout change re-indexes workspaces and loses the arrangement.
         if (this._layoutSettling)
             return;
 
+        // By the note: get_monitor() already names the monitor the window arrived at.
         const connector = placementConnector(window);
         if (connector)
             this._registry.forConnector(connector)?.untrack(window);
 
-        // untrack() can shrink the monitor in dynamic mode, which the panel
-        // dots need to hear about the same way _trackWindow() and the
-        // 'unmanaged' handler already tell them about a change.
         this._indicator?.sync();
     }
 
@@ -453,18 +305,11 @@ export default class WorkspaceIslands extends Extension {
         this._signals.push([object, object.connect(signal, callback)]);
     }
 
-    /**
-     * True from the first hint of a monitor change until the settle lands.
-     *
-     * The one thing that separates "Mutter is putting windows back" from "the
-     * user dragged this here", and the only reason a placement note can be
-     * trusted in one case and must be ignored in the other.
-     */
+    // Separates Mutter relocating windows from a user drag, which must not honour placement notes.
     get _layoutSettling() {
         return this._layoutChanging || this._settleId !== 0;
     }
 
-    /** Restart the quiet period. See SETTLE_DELAY_MS. */
     _scheduleSettle() {
         if (this._settleId)
             GLib.Source.remove(this._settleId);
@@ -479,42 +324,23 @@ export default class WorkspaceIslands extends Extension {
         GLib.Source.set_name_by_id(this._settleId, '[workspace-islands] monitor settle');
     }
 
-    /**
-     * Re-adopt against the layout that turned out to be real.
-     *
-     * Every window here goes through track(), which reads its note first, so
-     * running this against a layout that is still moving costs nothing but a
-     * repeat — the answer converges on the same arrangement either way. That is
-     * what makes the delay above a coalescing optimisation rather than a race
-     * being papered over.
-     */
+    // Idempotent: track() reads notes first, so running on a still-moving layout only repeats work.
     _settleLayout() {
-        // disable() removes the source before tearing the registry down, so
-        // this should be unreachable — but a GLib callback firing into a
-        // half-dismantled extension is the kind of thing that is worth one line
-        // to make impossible rather than unlikely.
         if (!this._registry)
             return;
 
         const live = this._registry.syncMonitors();
 
-        // Before adoption: adopting first would file a window against the
-        // monitor it has not been moved back to yet.
+        // Reclaim before adopting, or windows get filed on the monitor they have not returned to yet.
         let reclaimed = 0;
         for (const connector of live)
             reclaimed += this._reclaim(connector);
 
-        // Windows Mutter moved while the handlers were standing aside are
-        // still filed where they were. Let go of them first, so the adoption
-        // below files each one exactly once, on the monitor it is really on.
+        // Release windows moved while the handlers stood aside, so adoption files each exactly once.
         this._registry.releaseStrays();
         this._adoptExistingWindows();
 
-        // Live monitors only. A detached one holds no windows, and every one
-        // of its workspaces is empty for that reason alone: reconciling it
-        // would collapse them, shift its active index and drop its app rules,
-        // and the arrangement it is keeping for its return is the whole point
-        // of keeping it.
+        // Live monitors only: reconciling a detached one would collapse the arrangement kept for it.
         for (const state of this._registry.states) {
             if (!live.has(state.connector))
                 continue;
@@ -523,16 +349,9 @@ export default class WorkspaceIslands extends Extension {
             state.reconcileSize();
         }
 
-        // A window we parked that ended up on no secondary monitor at all —
-        // moved to the primary while its own monitor stayed — has no
-        // workspace left to be shown by.
         this._registry.restoreOrphans(this._shellWindows());
 
-        // Last, not first. The reclaim above travels through
-        // window-left-monitor and window-entered-monitor, which read this flag
-        // to tell a relocation from a drag — lowering it earlier makes our own
-        // reclaim look like the user dragging every window onto the active
-        // workspace.
+        // Last: the reclaim above goes through handlers that read this flag to tell relocation from drag.
         this._layoutChanging = false;
 
         this._afterChange(
@@ -540,32 +359,7 @@ export default class WorkspaceIslands extends Extension {
             (reclaimed ? `, ${reclaimed} window(s) reclaimed` : ''));
     }
 
-    /**
-     * Bring back the windows a returning monitor lost.
-     *
-     * Mutter remembers the output a window came from and usually puts it back
-     * itself, so on real hardware this finds nothing to do. Usually is not
-     * always: virtual displays and some docks come back with a different output
-     * id, and then the monitor returns to empty virtual workspaces while its
-     * windows sit on the laptop screen. That is the reported bug wearing a
-     * different hat.
-     *
-     * Two conditions, both narrow on purpose:
-     *
-     *   the window is one *this monitor* lost when it went away, not merely one
-     *   carrying an old note. A window moved to the primary last week still has
-     *   a note naming this connector; it was never detached, and where it lives
-     *   is the user's decision, not ours.
-     *
-     *   the connector just came back. Edge-triggered, so a resolution change or
-     *   a third display appearing does not drag anything anywhere.
-     *
-     * A window moved to another *secondary* monitor excludes itself with no
-     * special case: that monitor's track() stamped its own connector on the way
-     * in, and _place() dropped it from this one's detached set.
-     *
-     * @returns {number} how many windows were moved back
-     */
+    // Only windows this monitor lost on detach, and only on its return; Mutter usually beats us to it.
     _reclaim(connector) {
         const state = this._registry.forConnector(connector);
         const monitorIndex = monitorIndexOf(connector);
@@ -580,8 +374,6 @@ export default class WorkspaceIslands extends Extension {
             if (!window || !state.wasDetached(window))
                 continue;
 
-            // Mutter got there first. Nothing to do, and moving it again would
-            // only re-derive the frame rect for no reason.
             if (window.get_monitor() === monitorIndex)
                 continue;
 
@@ -593,20 +385,7 @@ export default class WorkspaceIslands extends Extension {
         return moved;
     }
 
-    /**
-     * The one way a window enters the model from here: admission, filing and
-     * the signals that keep the model honest about it afterwards.
-     *
-     * @param {object} [options]
-     * @param {boolean} [options.trustPlacement] see MonitorState.track()
-     * @param {number} [options.index] file it here instead of deciding
-     * @param {MonitorState} [options.state] the monitor to file it on, when
-     *   the caller already knows; otherwise the one the window is on
-     */
     _trackWindow(window, { trustPlacement = true, index = -1, state = null } = {}) {
-        // Before anything is connected: a window the model will never hold
-        // has no business with the handlers below. track() refuses it too;
-        // this only saves the signals. See windowFilter.js.
         if (!isManageable(window))
             return;
 
@@ -622,10 +401,7 @@ export default class WorkspaceIslands extends Extension {
 
         const ids = [
             window.connect('unmanaged', () => {
-                // Everywhere, not forWindow(): a window being unmanaged has no
-                // monitor worth asking about, and it belongs nowhere now. A
-                // group left holding a dead window would minimize() it on the
-                // next reapply().
+                // Everywhere: an unmanaged window has no meaningful monitor, and a stale entry gets minimized.
                 this._registry?.untrackEverywhere(window);
                 this._disconnectWindow(window);
                 this._indicator?.sync();
@@ -638,15 +414,7 @@ export default class WorkspaceIslands extends Extension {
         this._windowSignals.set(window, ids);
     }
 
-    /**
-     * Follow a window that something else brought back.
-     *
-     * The app switcher, the dash and notifications can all un-minimize a
-     * window sitting on an inactive virtual workspace. Fighting that would
-     * mean the window flickers and disappears again; instead the monitor
-     * switches to wherever that window lives, which is what the user asked
-     * for by picking it.
-     */
+    // Outside un-minimizes (app switcher, dash, notifications) are followed, not fought.
     _onMinimizedChanged(window) {
         if (isApplying() || window.minimized || !isHiddenByUs(window))
             return;
@@ -680,16 +448,10 @@ export default class WorkspaceIslands extends Extension {
     }
 
     _bindKeys() {
-        // Dynamic mode has no setting to cap this at — the static count is
-        // irrelevant and greyed out in prefs — so bind up to the schema's own
-        // ceiling instead of whatever the (unrelated) static count is left at.
         const count = this._settings.get_boolean('dynamic-virtual-workspaces')
             ? MAX_DIRECT_SWITCH_KEYS
             : this._settings.get_int('virtual-workspaces');
 
-        // Only where an accelerator is actually set: switch-to-5..8 default to
-        // an empty list, and registering those anyway just logs noise for a
-        // shortcut nobody asked for.
         for (let i = 1; i <= count; i++) {
             const name = `switch-to-${i}`;
             if (this._settings.get_strv(name).length > 0)
@@ -702,15 +464,9 @@ export default class WorkspaceIslands extends Extension {
         this._keys.add('move-window-to-prev', () => this._moveFocused(-1));
     }
 
-    /**
-     * Acts on the monitor that has focus. On the primary monitor there is
-     * nothing to do — GNOME's native workspaces already handle it — so the
-     * shortcut is simply a no-op there rather than doing something surprising.
-     */
     _switchTo(index, forward) {
         const state = this._registry.forFocusedMonitor();
         if (!state) {
-            // Say so. A shortcut that quietly does nothing is undebuggable.
             this._log(`no-op: ${this._registry.describeFocusTarget()}`);
             return;
         }
@@ -718,15 +474,6 @@ export default class WorkspaceIslands extends Extension {
         this._requestSwitch(state, index, forward);
     }
 
-    /**
-     * Switch, sliding if a slide is possible.
-     *
-     * The slide commits through onCommit when it lands, so there are two paths
-     * to the same state change and only one of them is synchronous.
-     *
-     * @param {boolean} [forward] direction of travel, where one is meant; the
-     *   shortcuts wrap, and a wrap has a direction its indices do not show
-     */
     _requestSwitch(state, index, forward) {
         if (index < 0 || index >= state.size || index === state.activeIndex)
             return;
@@ -737,24 +484,9 @@ export default class WorkspaceIslands extends Extension {
         this._commitSwitch(state, index, { slid: false });
     }
 
-    /**
-     * Apply the switch.
-     *
-     * @param {object} [options]
-     * @param {boolean} [options.slid] a slide already showed this, so the
-     *   minimize animation must not play on top of it
-     * @param {boolean} [options.announce] show the on-screen popup
-     *
-     * The two are independent, which is not obvious and is worth stating.
-     * GNOME shows the OSD on a *keyboard* switch even though the workspace also
-     * slides (`_showWorkspaceSwitcher` runs the animation and then displays the
-     * popup), and shows nothing on a swipe, where the movement under your
-     * fingers is the feedback. Tying the popup to "did it slide" would silence
-     * it for every shortcut.
-     */
+    // slid and announce are independent: GNOME shows the OSD on keyboard switches that also slide.
     _commitSwitch(state, index, { slid = true, announce = true } = {}) {
-        // Read before the switch: afterwards the focused window is the one
-        // that was just parked, and Mutter is about to give its focus away.
+        // Read before switching: afterwards the focused window is the one just parked.
         const focus = global.display.focus_window;
         const ownsFocus = !focus || this._registry.forWindow(focus) === state;
 
@@ -767,31 +499,13 @@ export default class WorkspaceIslands extends Extension {
         if (announce)
             this._popup?.show(state);
 
-        // Not `index`: switchTo() can have just collapsed an empty workspace
-        // and shifted everything after it, including the one just landed on
-        // — activeIndex is the one value guaranteed to still name it, same
-        // reasoning as the slide.js fix for the same underlying cause.
+        // activeIndex, not index: switchTo() may have collapsed an empty workspace and shifted indices.
         this._afterChange(
             `${state.connector} -> virtual workspace ${state.activeIndex + 1} ` +
             `(${state.activeWindows.length} window(s))`);
     }
 
-    /**
-     * Give the keyboard to the workspace now on screen.
-     *
-     * Parking the focused window makes Mutter hand focus on, and it hands it
-     * to the top window of the native workspace — on the primary, since every
-     * window here is sticky. Focus would leave the monitor the user is
-     * working on, and with it every shortcut and the panel dots. A native
-     * switch focuses the top window of the workspace it lands on; this does
-     * the same, before Mutter gets to it. Activating flushes the window's
-     * pending show, so it can take focus while the switch is still settling,
-     * and the parked window no longer has any to hand on.
-     *
-     * An empty workspace has nothing to focus. Focus is unset rather than
-     * left for Mutter to give away, and held on this monitor until something
-     * takes it — see Registry.holdFocus().
-     */
+    // Beat Mutter's focus handover, which would send focus to the primary since all windows are sticky.
     _focusActive(state) {
         const current = global.display.focus_window;
         if (current && !current.minimized && state.indexOf(current) === state.activeIndex)
@@ -808,7 +522,6 @@ export default class WorkspaceIslands extends Extension {
         this._registry.holdFocus(state.connector);
     }
 
-    /** Single place where a state change is persisted, shown and logged. */
     _afterChange(message) {
         this._persistence?.scheduleSave(this._registry);
         this._indicator?.sync();
@@ -826,32 +539,18 @@ export default class WorkspaceIslands extends Extension {
         this._switchTo((state.activeIndex + delta + count) % count, delta > 0);
     }
 
-    /**
-     * Place a window dropped on a virtual workspace in the overview.
-     *
-     * Two cases. A window already on this monitor is just re-filed. A window
-     * dragged in from another monitor has to be moved there first, and Mutter
-     * announces that with `window-entered-monitor`, which adopts it onto
-     * whatever the app rule or the active workspace says — so the reassignment
-     * has to come after, not instead.
-     */
     _dropWindow(state, index, window, monitorIndex) {
-        // The overview shows, and lets you drag, every window that is not
-        // skip-taskbar — a dialog with no parent among them. The model cannot
-        // hold one (see windowFilter.js), so the drop is declined before the
-        // window is moved anywhere on the strength of it.
         if (!isManageable(window)) {
             this._log(`drop declined: "${window.get_title()}" is not a window ` +
                 'virtual workspaces can hold');
             return;
         }
 
+        // Move first: window-entered-monitor adopts it, so the reassignment below must come after.
         if (window.get_monitor() !== monitorIndex)
             window.move_to_monitor(monitorIndex);
 
-        // Through _trackWindow(), not track(): a window filed for the first
-        // time here needs the same 'unmanaged' and 'notify::minimized'
-        // handlers as one that arrived any other way.
+        // _trackWindow(), not track(), so a first-time window also gets its signal handlers.
         if (state.indexOf(window) === -1)
             this._trackWindow(window, { index, state });
         else
@@ -863,11 +562,6 @@ export default class WorkspaceIslands extends Extension {
     }
 
     _moveFocused(delta) {
-        // Each early return says why, as the switch shortcuts already do. Not
-        // describeFocusTarget() for all three: with nothing focused it would
-        // describe the pointer, which this shortcut never consults, and for a
-        // window the model does not hold it names a secondary monitor and
-        // explains nothing.
         const window = global.display.focus_window;
         if (!window) {
             this._log('no-op: no focused window');
@@ -890,8 +584,6 @@ export default class WorkspaceIslands extends Extension {
         const to = (from + delta + state.size) % state.size;
         state.moveWindowTo(window, to);
 
-        // The window just parked was the focused one. Same handover as a
-        // switch, and for the same reason.
         if (wasOnScreen)
             this._focusActive(state);
         this._afterChange(

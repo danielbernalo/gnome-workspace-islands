@@ -1,15 +1,3 @@
-/**
- * Which windows the model may hold (issue #18).
- *
- * The model hides a window by minimizing it, so a window Mutter will not
- * minimize can never be parked: it stays on screen while Alt+Tab and the
- * overview treat it as living on another workspace. The window types below
- * are the ones a secondary monitor really carries, built the way Mutter
- * describes them: `can_minimize()` is false for every type but NORMAL and for
- * every skip-taskbar window, and an attached dialog is a transient of its
- * parent.
- */
-
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -63,8 +51,6 @@ for (const [name, make] of Object.entries(unmanageable)) {
         assert.equal(isManageable(make()), false);
     });
 
-    // track() is what every path into a group goes through, the overview
-    // drop included, so this is the guard that cannot be bypassed.
     test(`track() refuses ${name}, even onto an inactive workspace`, () => {
         const state = new MonitorState('HDMI-1', false);
         state.resize(4);

@@ -1,15 +1,3 @@
-/**
- * Preferences window.
- *
- * Runs in its own process with GTK4/Adwaita — no Clutter, Meta, St or Shell
- * here. The only thing shared with the extension is the settings schema.
- *
- * The Diagnostics group is not decoration. This extension depends on a mutter
- * setting that other software flips (PaperWM forces it off), and when it is
- * off nothing works and the reason is invisible. Surfacing it with a one-click
- * fix turns the worst failure mode into a non-event.
- */
-
 import Adw from 'gi://Adw';
 import Gio from 'gi://Gio';
 import GObject from 'gi://GObject';
@@ -77,8 +65,6 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
         });
         settings.bind('virtual-workspaces', count, 'value',
             Gio.SettingsBindFlags.DEFAULT);
-        // Only applies with dynamic workspaces off — greyed out otherwise
-        // rather than left looking like it still does something.
         settings.bind('dynamic-virtual-workspaces', count, 'sensitive',
             Gio.SettingsBindFlags.INVERT_BOOLEAN);
         group.add(count);
@@ -100,14 +86,6 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
         return page;
     }
 
-    /**
-     * The three things that decide whether this feels like GNOME.
-     *
-     * All default on. They are switches rather than assumptions because each
-     * one buys its polish with something real — the slide clones windows while
-     * it runs, and the gesture claims three-finger swipes on secondary
-     * monitors.
-     */
     _feelGroup(settings) {
         const group = new Adw.PreferencesGroup({
             title: _('Switching'),
@@ -135,13 +113,6 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
         return group;
     }
 
-    /**
-     * Live view of the one setting the whole design rests on.
-     *
-     * Windows on secondary monitors are only sticky while this is true. With
-     * it off, virtual workspaces leak into each other and nothing explains
-     * why — so it is shown, watched, and fixable from here.
-     */
     _diagnosticsGroup() {
         const group = new Adw.PreferencesGroup({
             title: _('Diagnostics'),
@@ -181,9 +152,7 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
             fix.visible = !ok;
         };
 
-        // The settings object can outlive this window: the Extensions app keeps
-        // running after it closes, and a change then would write to disposed
-        // widgets. Tie the handler to the group's lifetime.
+        // The Extensions app outlives this window; a later change must not hit disposed widgets.
         const changedId = mutter.connect(`changed::${ONLY_ON_PRIMARY}`, refresh);
         group.connect('destroy', () => mutter.disconnect(changedId));
         refresh();
@@ -212,13 +181,6 @@ export default class WorkspaceIslandsPreferences extends ExtensionPreferences {
     }
 }
 
-/**
- * A row that captures a key combination.
- *
- * Clicking opens a modal that grabs the next chord. Escape cancels, Backspace
- * clears — the conventions GNOME's own keyboard settings use, so the behaviour
- * needs no explaining.
- */
 const ShortcutRow = GObject.registerClass(
 class ShortcutRow extends Adw.ActionRow {
     _init(settings, key, title, window) {
@@ -234,7 +196,6 @@ class ShortcutRow extends Adw.ActionRow {
         });
         this.add_suffix(this._label);
 
-        // Settings outlive this row, so the handler has to come back off.
         this._changedId = this._settings.connect(
             `changed::${key}`, () => this._sync());
         this.connect('destroy', () => {
@@ -284,7 +245,6 @@ class ShortcutRow extends Adw.ActionRow {
                 return Gdk.EVENT_STOP;
             }
 
-            // A bare modifier is the user mid-chord, not the chord itself.
             if (!isBindable(keyval, mask))
                 return Gdk.EVENT_STOP;
 

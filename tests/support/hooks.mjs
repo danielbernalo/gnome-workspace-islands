@@ -1,21 +1,4 @@
-/**
- * Module hooks that let the extension's modules load under Node.
- *
- * `gi://` and `resource:///` only exist inside a running GNOME Shell. Every
- * such import is answered here, in one of two ways:
- *
- *   - a fake the test installed, under `globalThis.__wiFakes[specifier]`,
- *     before importing anything from src/. Only the members a fake defines
- *     are real; every other one falls back to the stub below.
- *   - otherwise an inert stub: any property read, call or construction
- *     returns the stub again, so modules evaluate their top level (class
- *     declarations, GObject.registerClass, constants) without a shell.
- *
- * ESM links named imports statically, so every name src/ imports from a shell
- * module has to be a real export, and so does every member it reads off a
- * namespace import (`Main.wm`, `AltTab.WindowSwitcherPopup`). Both are read
- * out of src/ itself rather than kept in a list that would drift.
- */
+// Shell imports resolve to globalThis.__wiFakes, else inert stubs; export names come from src/.
 
 import { readdirSync, readFileSync } from 'node:fs';
 

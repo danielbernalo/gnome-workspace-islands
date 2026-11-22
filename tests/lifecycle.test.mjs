@@ -1,32 +1,9 @@
-/**
- * The extension's lifecycle, driven through its real signal handlers.
- *
- * extension.js is loaded for real, and so is everything it imports. The shell
- * objects those handlers talk to are replaced with small fakes that behave
- * the way Mutter and GNOME Shell 51 do where it matters, and say so:
- *
- *   a hotplug      MonitorManager emits 'monitors-changing', then rebuilds its
- *                  logical monitors and moves windows off the ones that went
- *                  away — one window-left-monitor / window-entered-monitor
- *                  pair per window, every window, even one whose monitor did
- *                  not change — and only then does LayoutManager refresh its
- *                  monitor list and emit its own 'monitors-changed'.
- *   focus          Mutter only hands focus on when the focused window is
- *                  hidden, later, on its own; the fake never does, so what a
- *                  test sees is what the extension asked for.
- *
- * The extension object is built by hand from its prototype: enable() wires up
- * the panel, the overview and the gesture, none of which these tests are about.
- */
+// Fakes behave like Mutter and GNOME Shell 51, except the fake never hands focus on.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { FakeWindow } from './support/fakes.mjs';
-
-// ---------------------------------------------------------------------------
-// Shell fakes.
-// ---------------------------------------------------------------------------
 
 class Emitter {
     constructor() {
@@ -83,7 +60,6 @@ const layoutManager = new Emitter();
 layoutManager.primaryIndex = 0;
 layoutManager.monitors = [];
 
-/** Every window the shell has, for get_window_actors(). */
 let windows = [];
 
 Object.assign(globalThis, {
@@ -117,10 +93,7 @@ const Main = {
     wm: { addKeybinding: () => 1, removeKeybinding() {}, skipNextEffect() {} },
 };
 
-// ---------------------------------------------------------------------------
-// Shell modules this suite fakes. Everything else gets the inert stub from
-// tests/support/hooks.mjs. They have to be in place before src/ is imported.
-// ---------------------------------------------------------------------------
+// These fakes must be in place before src/ is imported; everything else gets the inert stub.
 
 globalThis.__wiFakes = {
     'gi://GLib': { default: GLib },
@@ -132,11 +105,6 @@ const { Registry, invalidateConnectors } = await import('../src/monitorState.js'
 const { placementIndex } = await import('../src/placement.js');
 const { hide, isHiddenByUs } = await import('../src/visibility.js');
 
-// ---------------------------------------------------------------------------
-// Harness.
-// ---------------------------------------------------------------------------
-
-/** A Meta.Window with the signals and calls the extension uses on one. */
 class ShellWindow extends FakeWindow {
     constructor(options) {
         super(options);
@@ -184,7 +152,6 @@ class ShellWindow extends FakeWindow {
     }
 }
 
-/** A GSettings that holds values and emits `changed::key` when set. */
 class FakeSettings extends Emitter {
     constructor(values) {
         super();
@@ -223,13 +190,11 @@ const SWITCH_KEYS = {
     'switch-to-4': ['<Super><Alt>4'],
 };
 
-/** Attach displays: the primary, then one per connector. */
 function setLayout(connectors) {
     outputs = ['eDP-1', ...connectors];
     layoutManager.monitors = outputs.map((_c, index) => ({ index }));
 }
 
-/** An enabled extension with one secondary monitor, HDMI-1. */
 function makeExtension({ dynamic = false, count = 4, debug = false, settings = {} } = {}) {
     timers.clear();
     windows = [];
@@ -270,7 +235,6 @@ function makeExtension({ dynamic = false, count = 4, debug = false, settings = {
     return ext;
 }
 
-/** A window opened on `monitor`, the way the shell announces one. */
 function open(options = {}) {
     const window = new ShellWindow({ monitor: 1, ...options });
     windows.push(window);
@@ -278,10 +242,6 @@ function open(options = {}) {
     return window;
 }
 
-/**
- * HDMI-1 holding a, b, c on workspaces 1, 2, 3, with workspace 2 on screen —
- * the arrangement every hotplug test starts from.
- */
 function arrange(ext) {
     const state = ext._registry.forConnector('HDMI-1');
     const [a, b, c] = ['a', 'b', 'c'].map(wmClass => open({ wmClass }));
@@ -293,20 +253,12 @@ function arrange(ext) {
     return { state, a, b, c };
 }
 
-/**
- * A display change, in the order Mutter and the shell really produce it.
- *
- * @param {string[]} connectors the secondary displays attached afterwards
- * @param {Map<FakeWindow, number>} moves where Mutter puts which window
- * @param {FakeWindow[]} [untouched] windows Mutter re-announces in place
- */
+// A display change, in the order Mutter and the shell really produce it.
 function changeLayout(connectors, moves, untouched = []) {
     monitorManager.emit('monitors-changing');
 
-    // The backend's logical monitors are rebuilt first...
     outputs = ['eDP-1', ...connectors];
 
-    // ...then every window is re-announced, moved or not...
     for (const window of windows) {
         const to = moves.get(window) ?? (untouched.includes(window) ? window._monitor : null);
         if (to === null)
@@ -318,12 +270,10 @@ function changeLayout(connectors, moves, untouched = []) {
         display.emit('window-entered-monitor', to, window);
     }
 
-    // ...and only then does LayoutManager catch up.
     layoutManager.monitors = outputs.map((_c, index) => ({ index }));
     layoutManager.emit('monitors-changed');
 }
 
-/** The settle timer firing: the layout stopped moving. */
 function settle() {
     const pending = [...timers.values()];
     timers.clear();
@@ -338,10 +288,6 @@ function isParked(window) {
 function isShown(window) {
     return !window.minimized && !isHiddenByUs(window);
 }
-
-// ---------------------------------------------------------------------------
-// Unplug and replug.
-// ---------------------------------------------------------------------------
 
 for (const dynamic of [false, true]) {
     const mode = dynamic ? 'dynamic' : 'fixed';
@@ -456,13 +402,11 @@ test('dragging a window to another monitor still takes it out of its workspace',
 test('a window dragged onto the monitor lands on the workspace on screen', () => {
     const ext = makeExtension();
     const { state, a } = arrange(ext);
-    // Opened on workspace 2, the one on screen, so it has a note but no rule.
     const d = open({ wmClass: 'd' });
     d.move_to_monitor(0);
     state.switchTo(0);
     assert.equal(isShown(a), true);
 
-    // Its note still says workspace 2; a drag is about now.
     d.move_to_monitor(1);
 
     assert.equal(state.indexOf(d), 0);
@@ -482,10 +426,6 @@ test('a window moved to the primary during a layout change is not left parked', 
     assert.equal(state.indexOf(c), 2);
     assert.equal(isParked(c), true);
 });
-
-// ---------------------------------------------------------------------------
-// disable()
-// ---------------------------------------------------------------------------
 
 test('disable() shows a window we parked even if no workspace holds it', () => {
     const ext = makeExtension();
@@ -510,10 +450,6 @@ test('disable() leaves a window the user minimized alone', () => {
 
     assert.equal(primary.minimized, true);
 });
-
-// ---------------------------------------------------------------------------
-// Shortcuts.
-// ---------------------------------------------------------------------------
 
 test('a switch-to shortcut assigned while running is registered', () => {
     const ext = makeExtension({ count: 6 });
@@ -551,10 +487,6 @@ test('changing the count still rebinds the shortcuts', () => {
     assert.equal(ext._keys.handlers.has('switch-next'), true);
 });
 
-// ---------------------------------------------------------------------------
-// Focus after a switch.
-// ---------------------------------------------------------------------------
-
 test('switching gives focus to the top window of the workspace switched to', () => {
     const ext = makeExtension();
     const state = ext._registry.forConnector('HDMI-1');
@@ -580,7 +512,6 @@ test('switching to an empty workspace keeps the shortcuts on that monitor', () =
 
     assert.equal(display.unsetFocusCount, 1);
     assert.equal(display.focus_window, null);
-    // The pointer rests on the primary; the shortcut must not follow it.
     assert.equal(ext._registry.forFocusedMonitor(), state);
 
     ext._switchTo(0);
@@ -631,10 +562,6 @@ test('moving the focused window away hands focus to what is left on screen', () 
     assert.equal(isParked(terminal), true);
     assert.equal(display.focus_window, files);
 });
-
-// ---------------------------------------------------------------------------
-// Debug logging for shortcuts that do nothing.
-// ---------------------------------------------------------------------------
 
 function captureLog(callback) {
     const lines = [];
@@ -691,10 +618,6 @@ test('a switch shortcut on the primary still says why it did nothing', () => {
     assert.equal(lines.length, 1);
     assert.match(lines[0], /no-op: .*PRIMARY/);
 });
-
-// ---------------------------------------------------------------------------
-// Admission (issue #18): every way in goes through one gate.
-// ---------------------------------------------------------------------------
 
 test('an unmanageable window is never adopted and never wired', () => {
     makeExtension();

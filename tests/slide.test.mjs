@@ -4,29 +4,19 @@ import assert from 'node:assert/strict';
 import { FakeWindow } from './support/fakes.mjs';
 import * as slideModule from '../src/slide.js';
 
-/**
- * The controller minus the one step that needs a live shell: taking over the
- * shell's SwipeTracker. Tests hand it a fake tracker and shell controller
- * instead, which is what that step would have wired up.
- */
+// Skips taking over the shell's SwipeTracker; tests hand in a fake tracker and controller.
 class SlideController extends slideModule.SlideController {
     _takeOverTracker() {}
 }
 
-/**
- * A window as Mutter reports it to the shell's own clone code: a window is
- * "showing on its workspace" unless it, or an ancestor, is minimized.
- */
+// Mutter treats a window as showing on its workspace unless it or an ancestor is minimized.
 class ShownWindow extends FakeWindow {
     showing_on_its_workspace() {
         return !this.minimized;
     }
 }
 
-/**
- * The shell globals slide.js touches. `stack` is Mutter's stacking order,
- * bottom first, as `sort_windows_by_stacking` reports it.
- */
+// `stack` is Mutter's stacking order, bottom first, as sort_windows_by_stacking reports it.
 function installShell({ stack = [] } = {}) {
     const stage = {
         handlers: new Map(),
@@ -72,7 +62,6 @@ function installShell({ stack = [] } = {}) {
     return shell;
 }
 
-/** A model state: only what the slide reads. */
 function fakeState(groups, activeIndex = 0) {
     return {
         activeIndex,
@@ -81,7 +70,6 @@ function fakeState(groups, activeIndex = 0) {
     };
 }
 
-/** The cover of a running slide, with the calls a test wants to observe. */
 function fakeSlide(pages, position = 0) {
     return {
         progress: position,
@@ -104,12 +92,7 @@ function fakeSlide(pages, position = 0) {
     };
 }
 
-/**
- * SwipeTracker as shell 51 implements the part the slide depends on: a
- * confirmed swipe is SCROLLING until it ends, and turning `enabled` off while
- * SCROLLING interrupts it — 'end'(0, cancelProgress) is emitted synchronously,
- * then the state resets.
- */
+// Like shell 51: disabling a SCROLLING tracker emits 'end'(0, cancelProgress) synchronously.
 function fakeTracker(controller) {
     return {
         state: 'NONE',
@@ -138,7 +121,6 @@ function fakeTracker(controller) {
     };
 }
 
-/** The shell's WorkspaceAnimationController, reduced to what is delegated. */
 function fakeShellController() {
     return {
         begins: [],
@@ -172,7 +154,6 @@ function setup({ states, stack } = {}) {
     return { shell, controller, tracker, shellController, commits, progress };
 }
 
-/** Put a keyboard slide in flight, as animateSwitch() leaves it. */
 function runningSlide(controller, state, pages, { revealed = [] } = {}) {
     const slide = fakeSlide(pages, pages.indexOf(state.activeIndex));
     controller._session = { state, slide, revealed, gesture: false };
