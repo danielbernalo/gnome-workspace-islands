@@ -6,7 +6,7 @@
 
 </div>
 
-**Independent workspaces on every monitor, for GNOME Shell 50.** Switch workspaces on one screen and the others stay exactly where you left them. No tiling, no new window manager, no relearning GNOME.
+**Independent workspaces on every monitor, for GNOME Shell 50 and 51.** Switch workspaces on one screen and the others stay exactly where you left them. No tiling, no new window manager, no relearning GNOME.
 
 Each monitor is its own island: it keeps its own set of workspaces, and nothing you do on one disturbs the rest.
 
@@ -28,7 +28,7 @@ The closest existing extension is [Switch workspaces on active monitor](https://
 
 ## Before you install
 
-- [ ] **GNOME Shell 50**, on Wayland
+- [ ] **GNOME Shell 50 or 51**, on Wayland
 - [ ] **At least two monitors** — the extension only acts on non-primary ones, so a single display gives it nothing to do
 - [ ] **PaperWM disabled**, if you have it — the two fight over the same mutter setting with opposite values
 - [ ] `org.gnome.mutter workspaces-only-on-primary` set to `true`
