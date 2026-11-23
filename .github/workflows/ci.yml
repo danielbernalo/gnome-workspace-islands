@@ -96,6 +96,9 @@ jobs:
           if not re.fullmatch(r'(?!^[. ]+$)[a-zA-Z0-9 .]{1,16}', name):
               sys.exit(f'version-name {name!r} fails the documented pattern')
 
+          if not re.search(rf'^## \[{re.escape(name)}\]', pathlib.Path('CHANGELOG.md').read_text(), re.M):
+              sys.exit(f'CHANGELOG.md has no entry for version-name {name!r}')
+
           print(f'ok: {defined} @ {name}')
           EOF
 

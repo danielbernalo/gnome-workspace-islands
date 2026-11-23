@@ -44,6 +44,30 @@ jobs:
       - name: Build the bundle
         run: make pack
 
+      # This version's CHANGELOG section goes first, then the install notes;
+      # --generate-notes appends the list of pull requests after both.
+      - name: Assemble the release notes
+        run: |
+          python3 - <<'EOF'
+          import json, os, pathlib, re, sys
+
+          version = json.loads(pathlib.Path('src/metadata.json').read_text())['version-name']
+          changelog = pathlib.Path('CHANGELOG.md').read_text()
+
+          match = re.search(
+              rf'^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|^\[[^\]]+\]: |\Z)',
+              changelog, re.M | re.S)
+          if not match or not match.group(1).strip():
+              sys.exit(f'CHANGELOG.md has no entry for {version}')
+
+          install = pathlib.Path('.github/release-notes.md').read_text()
+          url = '{GITHUB_SERVER_URL}/{GITHUB_REPOSITORY}/blob/{GITHUB_REF_NAME}/CHANGELOG.md'.format(**os.environ)
+          pathlib.Path('release-notes.md').write_text(
+              f"## What's new in {version}\n\n{match.group(1).strip()}\n\n"
+              f'Every release: [CHANGELOG.md]({url})\n\n{install}')
+          print(f'ok: notes for {version}')
+          EOF
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -57,13 +81,10 @@ jobs:
           scope=()
           [ -n "$previous" ] && scope=(--notes-start-tag "$previous")
 
-          # The notes file is prepended to the generated changelog, not
-          # replaced by it. It lives outside this workflow because a heredoc
-          # holding markdown inside a YAML block scalar is one stray column
-          # away from making the whole file unparseable.
+          # The notes file is prepended to the generated list of pull requests.
           gh release create "$GITHUB_REF_NAME" \
             "$uuid.shell-extension.zip" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
             "${scope[@]}" \
-            --notes-file .github/release-notes.md
+            --notes-file release-notes.md
