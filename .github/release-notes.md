@@ -22,7 +22,7 @@ Check it came up:
 gnome-extensions info workspace-islands@danielbernalo.github.io   # State: ACTIVE
 ```
 
-Requires GNOME Shell 50 on Wayland, at least two monitors, and
+Requires GNOME Shell 50 or 51 on Wayland, at least two monitors, and
 `workspaces-only-on-primary` set to `true`. See the
 [README](https://github.com/danielbernalo/gnome-workspace-islands#before-you-install)
 for the full list.
