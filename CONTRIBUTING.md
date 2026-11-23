@@ -115,22 +115,29 @@ rebuild a tag and compare bytes with what was published.
 ## Touching GNOME Shell internals
 
 Most of this extension's risk lives in a handful of places where it patches,
-overrides or replaces something private in GNOME Shell. Those are listed at the
-top of `src/overview.js` and `src/slide.js`, each with the reasoning for why
-that seam and not another.
+overrides or replaces something private in GNOME Shell. Every one is listed in
+the README, under "Why does it patch so much of GNOME Shell?", with the file it
+lives in and why that seam and not another.
 
 If you add one:
 
-- Say in a comment **why that seam**, and what happens when it moves.
+- Add it to that README table, and say **why that seam** in a one-line comment
+  above it.
 - Degrade rather than throw. A missing method should cost a feature, not the
   session.
 - Undo it in `disable()`. Anything left patched after unload is a bug that
   outlives the extension.
 
-Two traps already documented in code, worth knowing before you spend a day on
-either: a handler connected with `.bind(this)` in a constructor cannot be
+Two traps worth knowing before you spend a day on either: a handler connected with `.bind(this)` in a constructor cannot be
 overridden afterwards, and a disabled `SwipeTracker` is the only way to stop the
 shell's own gestures from swallowing events.
+
+## Comments
+
+Comment only what the code cannot say for itself: a GNOME Shell or Mutter quirk,
+an ordering constraint, an invariant that is easy to break. One line each. No
+comment that restates the code, and no history; that belongs in the commit
+message.
 
 ## Code of Conduct
 

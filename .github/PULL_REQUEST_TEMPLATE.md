@@ -41,7 +41,7 @@ Closes #
 <!--
 If this patches, overrides or replaces anything in GNOME Shell, name it here
 and say what happens when that seam moves in a future release. Every existing
-one is documented in code with the same reasoning; a new one should be too.
+one is listed in the README with its reasoning; a new one should be too.
 -->
 
 ## Checklist
