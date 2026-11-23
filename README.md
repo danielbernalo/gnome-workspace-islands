@@ -83,6 +83,10 @@ If it says `ERROR`, open the Extensions app — it shows the failure with a stac
 
 Everything acts on **the monitor holding the focused window**. On the primary monitor the shortcuts do nothing on purpose: GNOME's own workspaces already cover it, and hijacking them would break what already works.
 
+Switching keeps you on that monitor: focus goes to the top window of the workspace you land on, as it does on a native switch. Land on an empty one and the next shortcut still acts on the same monitor until you click something else.
+
+Only ordinary application windows move between virtual workspaces — the ones GNOME can minimize. Dialogs ride along with the window they belong to; a dialog with no parent, a dock, the desktop-icons window and anything else that cannot be minimized stays on screen on every workspace of its monitor.
+
 ### Keyboard
 
 | Shortcut | Action |
@@ -93,7 +97,7 @@ Everything acts on **the monitor holding the focused window**. On the primary mo
 
 All of them are rebindable in preferences.
 
-> **If you raise the workspace count above 4**, the extra ones have no shortcut until you assign it. `Super+Alt+5…8` are deliberately unbound by default so they do not silently claim keys you may already use.
+> **If you raise the workspace count above 4**, the extra ones have no shortcut until you assign it. `Super+Alt+5…8` are deliberately unbound by default so they do not silently claim keys you may already use. One you assign in preferences works straight away.
 
 ### Touchpad and mouse
 
@@ -181,9 +185,9 @@ A logout is the one that genuinely cannot be complete. Windows have **no stable 
 
 **`gnome-extensions enable` says the extension does not exist.** You have not logged out yet. That command asks the running shell, and on Wayland the shell only scans for extensions when the session starts. Install, restart the session, then enable.
 
-**A shortcut does nothing.** You are probably focused on the primary monitor, where it is a no-op by design. Turn on debug logging and the journal will say so explicitly.
+**A shortcut does nothing.** You are probably focused on the primary monitor, where it is a no-op by design. Turn on debug logging and the journal will say so explicitly — for the move-window shortcuts too, including when the focused window is one the extension leaves alone, like a dialog.
 
-**A window vanished.** The extension hides windows by minimizing them, so anything on an inactive workspace is minimized — visible in the dash, restorable from there. Clicking it un-minimizes it *and* takes you to the workspace it lives on. Disabling the extension restores everything unconditionally.
+**A window vanished.** The extension hides windows by minimizing them, so anything on an inactive workspace is minimized — visible in the dash, restorable from there. Clicking it un-minimizes it *and* takes you to the workspace it lives on. Disabling the extension brings back every window it minimized, including windows of a monitor you unplugged; a window you minimized yourself stays minimized.
 
 **Something is badly wrong and you want out.** This turns off every user extension immediately, without a logout and without uninstalling anything:
 
@@ -237,8 +241,11 @@ Super+1..4, untouched        Map<index, Set<window>>
 src/
 ├── extension.js      lifecycle, signals, shortcut handlers
 ├── monitorState.js   per-monitor workspace model (keyed by connector)
+├── windowFilter.js   which windows the model may hold
+├── placement.js      the note on each window: which monitor, which workspace
 ├── visibility.js     hiding via minimize, and why
 ├── slide.js          touchpad gesture and the sliding switch
+├── scroll.js         Super + wheel on a secondary monitor
 ├── keybindings.js    keybinding registration and teardown
 ├── persistence.js    saved arrangement across sessions and hotplug
 ├── indicator.js      takes over the panel's own workspace dots
@@ -264,16 +271,19 @@ machinery decides which monitor a swipe belongs to in a place extensions cannot
 reach. Every seam below exists because there is no supported way to do the same
 thing.
 
-Eight of them, all reachable from two files:
+Twelve of them, in four files:
 
-| Seam | Why |
-| --- | --- |
-| `Workspace._isOverviewWindow` | Splits one page of "every window on this monitor" into N virtual ones |
-| `Workspace.handleDragOver` / `acceptDrop` | The originals compare monitors, which is true of every page, so every drop was refused |
-| `SecondaryMonitorDisplay._updateWorkspacesView` | Chooses the scrolling view instead of the single-workspace one |
-| `WorkspacesDisplay._onScrollEvent` | Wheel scrolling is declined for non-primary monitors |
-| `WindowSwitcherPopup._getWindowList` | Keeps parked windows out of the window switcher |
-| Two `SwipeTracker` replacements | See below |
+| Seam | File | Why |
+| --- | --- | --- |
+| `Workspace._isOverviewWindow` | `overview.js` | Splits one page of "every window on this monitor" into N virtual ones |
+| `Workspace.handleDragOver` / `acceptDrop` | `overview.js` | The originals compare monitors, which is true of every page, so every drop was refused |
+| `Workspace._shouldLeaveOverview` / `_onCloneSelected` | `overview.js` | Clicking a neighbouring page switches to it instead of closing the overview; clicking a window still goes to it |
+| `WorkspaceBackground._updateRoundedClipBounds` | `overview.js` | A page's background reads the geometry of a monitor that was just unplugged and throws, once per virtual workspace |
+| `SecondaryMonitorDisplay._updateWorkspacesView` | `overview.js` | Chooses the scrolling view instead of the single-workspace one |
+| `WorkspacesDisplay._onScrollEvent` | `overview.js` | Wheel scrolling is declined for non-primary monitors |
+| `WindowManager.handleWorkspaceScroll` | `scroll.js` | Super + wheel over a secondary monitor switches that monitor's virtual workspace, not the native one |
+| `WindowSwitcherPopup._getWindowList` | `altTab.js` | Keeps parked windows out of the window switcher |
+| Two `SwipeTracker` replacements | `overview.js`, `slide.js` | See below |
 
 Each override degrades rather than throws: a missing method costs a feature and
 logs a warning, it does not take the session down. All of them are undone in
@@ -431,8 +441,9 @@ target exists before installing, logs a warning naming what it could not find,
 and returns. A missing method costs a feature — the overview falls back to the
 shell's own view, the gesture goes away — and never takes the session with it.
 
-Where to look is not a mystery either: all of the seams live in `src/overview.js`
-and `src/slide.js`, each with a comment saying why that seam and not another.
+Where to look is not a mystery either: all of the seams live in `src/overview.js`,
+`src/slide.js`, `src/scroll.js` and `src/altTab.js`, each with a comment saying why
+that seam and not another.
 
 ## Contributing
 

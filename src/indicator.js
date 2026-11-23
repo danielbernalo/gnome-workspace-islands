@@ -1,36 +1,4 @@
-/**
- * Workspace indicator.
- *
- * GNOME 48 replaced the "Activities" label with a row of dots that stretch and
- * fade as you move between workspaces. This module puts virtual workspaces into
- * *that* widget rather than adding a second one beside it, so the panel keeps
- * showing exactly one workspace indicator and the extension leaves no visible
- * trace of itself.
- *
- * What it shows follows the focused monitor, which is the same rule the
- * keyboard shortcuts already use:
- *
- *   focus on the primary monitor    native workspaces, unchanged behaviour
- *   focus on a secondary monitor    that monitor's virtual workspaces
- *
- * Two things about the shell make this work the way it does.
- *
- * `WorkspaceDot` and `WorkspaceIndicators` are module-private consts in
- * panel.js — no export, so they cannot be imported and are reimplemented here.
- * The consequence that matters is in teardown: the shell's own indicator is
- * *hidden*, never destroyed. There would be no way to build a replacement.
- *
- * Living inside the Activities button is not incidental either. The theme
- * scopes its rules to `#panel .panel-button#panelActivities` — both the dot
- * styling and the box spacing. Parented anywhere else these dots would render
- * unstyled; parented here they are the shell's own pixels.
- *
- * Everything is driven by an St.Adjustment whose value is *fractional*, exactly
- * as panel.js does it. Today only whole numbers are ever written to it. It is
- * built this way because that adjustment is the seam a touchpad gesture plugs
- * into: a swipe writes fractional progress, and the dots deform continuously
- * without this module changing at all.
- */
+// Lives inside the Activities button because the theme scopes the dot rules to #panelActivities.
 
 import Clutter from 'gi://Clutter';
 import GObject from 'gi://GObject';
@@ -40,10 +8,8 @@ import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { lerp } from 'resource:///org/gnome/shell/misc/util.js';
 
-/** Inactive dots are drawn slightly smaller. Matches panel.js. */
 const INACTIVE_DOT_SCALE = 0.75;
 
-/** How much the active dot stretches, by dot count. Matches panel.js. */
 const WIDTH_MULTIPLIERS = [
     { upTo: 2, multiplier: 3.625 },
     { upTo: 5, multiplier: 3.25 },
@@ -69,7 +35,6 @@ const WorkspaceDot = GObject.registerClass({
             ...params,
         });
 
-        // The style class is the shell's, and so is the rule that paints it.
         this._dot = new St.Widget({
             style_class: 'workspace-dot',
             y_align: Clutter.ActorAlign.CENTER,
@@ -102,9 +67,6 @@ const WorkspaceDot = GObject.registerClass({
         });
     }
 
-    // Width is what carries the animation: the active dot grows into a pill,
-    // and a half-way expansion gives a half-way width. That is why a fractional
-    // adjustment value reads as motion rather than as a jump.
     vfunc_get_preferred_width(forHeight) {
         const factor = lerp(1.0, this.widthMultiplier, this.expansion);
         return this._dot.get_preferred_width(forHeight)
@@ -172,23 +134,12 @@ class IslandsDots extends St.BoxLayout {
         this._recalculateDots();
     }
 
-    /**
-     * The adjustment other code drives. Exposed so a gesture can bind straight
-     * to it instead of pushing discrete values through set().
-     *
-     * @returns {St.Adjustment}
-     */
     get adjustment() {
         return this._adjustment;
     }
 
-    /**
-     * @param {number} count how many dots
-     * @param {number} value active workspace; fractional values are the point
-     */
     set(count, value) {
-        // Order matters: St.Adjustment clamps value against upper, so raising
-        // the count has to happen before a value that only the new count allows.
+        // St.Adjustment clamps value against upper, so upper has to be raised first.
         this._adjustment.upper = Math.max(count, 1);
         this._adjustment.value = value;
     }
@@ -237,11 +188,6 @@ class IslandsDots extends St.BoxLayout {
 });
 
 export class Indicator {
-    /**
-     * @param {object} opts
-     * @param {() => (object|null)} opts.getFocusedState MonitorState for the
-     *   focused monitor, or null when focus is on the primary one
-     */
     constructor({ getFocusedState }) {
         this._getFocusedState = getFocusedState;
         this._dots = null;
@@ -249,42 +195,24 @@ export class Indicator {
         this._signals = [];
         this._preview = null;
 
-        // Follows the shell's own workspace state, fractional value included,
-        // so time spent on the primary monitor looks untouched — because it is.
-        //
-        // The argument must be a real Clutter.Actor: createWorkspacesAdjustment
-        // passes it to `new St.Adjustment({actor})`, and a plain JS object gets
-        // "This JS object wrapper isn't wrapping a GObject" at enable() time.
-        // panel.js can pass `this` because there `this` *is* the actor; this
-        // class is not one. The stage is used rather than the dots because it
-        // outlives them — the panel is rebuilt on session mode changes, and the
-        // adjustment must not die with it. It is only a frame-clock owner; the
-        // registry that tracks it holds a WeakRef, so nothing is pinned.
+        // createWorkspacesAdjustment needs a real actor; the stage outlives panel rebuilds.
         this._nativeAdjustment = Main.createWorkspacesAdjustment(global.stage);
 
         this._connect(this._nativeAdjustment, 'notify::value', () => this.sync());
         this._connect(this._nativeAdjustment, 'notify::upper', () => this.sync());
         this._connect(global.display, 'notify::focus-window', () => this.sync());
 
-        // A session mode change can take our child out of the panel and bring
-        // the shell's back. In GNOME 50 it usually does not — _updatePanel only
-        // hides cached indicators and reuses them, so a lock leaves our dots
-        // parented and _attach() finds nothing to do. The listener stays
-        // because re-attaching is idempotent and cheap, and because "usually
-        // not" is a promise about an implementation detail, not an API.
+        // Session mode changes can rebuild the panel; re-attaching is idempotent and cheap.
         this._connect(Main.sessionMode, 'updated', () => this._attach());
 
         this._attach();
     }
 
-    /** Repaint from current state. Cheap enough to call on every change. */
     sync() {
         if (!this._dots)
             return;
 
-        // A swipe in progress is the most current thing there is. Focus and
-        // workspace signals keep firing under it, and every one of them would
-        // otherwise snap the dots back to a whole number mid-gesture.
+        // A swipe in progress wins, or focus and workspace signals would snap the dots mid-gesture.
         if (this._preview) {
             const { state, value } = this._preview;
             this._dots.set(state.size, value);
@@ -299,49 +227,28 @@ export class Indicator {
             this._dots.set(this._nativeAdjustment.upper, this._nativeAdjustment.value);
     }
 
-    /**
-     * Follow a switch as it happens.
-     *
-     * The fractional value is the whole point: `expansion` is computed as
-     * `1 - |index - value|`, so a half-finished swipe leaves two dots half
-     * stretched. Pass null to hand control back to sync().
-     *
-     * @param {object} state
-     * @param {number|null} value fractional workspace index
-     */
     setPreview(state, value) {
         this._preview = value === null ? null : { state, value };
         this.sync();
     }
 
-    /**
-     * Take over the Activities button.
-     *
-     * The shell's indicator is hidden rather than removed, and this is not
-     * politeness: WorkspaceIndicators is module-private, so a destroyed one
-     * could never be rebuilt and the panel would be left permanently altered.
-     */
+    // The shell's indicator is hidden, never destroyed: WorkspaceIndicators is private to panel.js.
     _attach() {
         if (this._dots?.get_parent())
             return;
 
-        // A panel rebuild can unparent ours without destroying it. Nothing
-        // else holds it after that, so replacing the reference alone would
-        // leak the actor and its adjustment on every rebuild.
+        // A panel rebuild can unparent ours without destroying it, which would leak it.
         this._dots?.destroy();
         this._dots = null;
 
         const activities = Main.panel.statusArea?.activities;
         if (!activities) {
-            // Some session modes have no Activities button. Nothing to take
-            // over, and nothing worth failing over either.
             this._dots = null;
             this._nativeDots = null;
             return;
         }
 
-        // Excluding our own: after a panel rebuild this runs again, and picking
-        // up a leftover Dots as "the native one" would hide the wrong widget.
+        // Skip our own, or a leftover Dots after a panel rebuild would be hidden as the native one.
         this._nativeDots = activities.get_children()
             .find(child => child !== this._dots && child instanceof St.BoxLayout)
             ?? null;
@@ -349,14 +256,7 @@ export class Indicator {
 
         this._dots = new Dots();
 
-        // Index 0, not add_child(). PanelMenu.ButtonBox.vfunc_allocate takes
-        // `get_first_child()` and allocates that one alone — an appended child
-        // is laid out by nobody, and its subtree logs "needs an allocation"
-        // forever while painting nothing.
-        //
-        // It also means the hidden native dots must stay in the tree at index
-        // 1 rather than being removed: destroying ours on unload makes them the
-        // first child again, and show() puts the panel back exactly as found.
+        // Index 0: ButtonBox allocates only its first child, and native dots regain it on unload.
         activities.insert_child_at_index(this._dots, 0);
 
         this.sync();
@@ -370,8 +270,6 @@ export class Indicator {
         this._dots?.destroy();
         this._dots = null;
 
-        // Unconditional: a panel left with no workspace indicator at all is a
-        // worse outcome than anything this extension does while running.
         this._nativeDots?.show();
         this._nativeDots = null;
 

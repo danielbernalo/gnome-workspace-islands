@@ -9,12 +9,13 @@ TARGET  := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 export WI_ROOT := $(CURDIR)
 export WI_UUID := $(UUID)
 
-.PHONY: help schemas skills install uninstall enable disable doctor pack nested logs status
+.PHONY: help schemas skills install uninstall enable disable doctor pack nested logs status test
 
 help:
 	@echo "make doctor     check every precondition — run this first when something's off"
 	@echo "make skills     fetch agent skills pinned in skills-lock.json"
 	@echo "make schemas    compile gsettings schemas"
+	@echo "make test       run the unit tests (Node, no shell needed)"
 	@echo "make install    compile schemas + symlink src/ into GNOME's extension dir"
 	@echo "make enable     add the uuid to enabled-extensions (linking is not enabling)"
 	@echo "make disable    remove the uuid from enabled-extensions"
@@ -126,6 +127,12 @@ for name, entry in lock['skills'].items():
     print('  %d files, hash verified, %d absolute links rewritten' % (extracted, before))
 endef
 export SKILLS_SCRIPT
+
+# The model and its helpers are plain JavaScript. tests/support stubs the
+# gi:// and resource:/// imports so they load under Node; anything that needs
+# a live shell is out of reach here and is tested in a nested session instead.
+test:
+	node --import ./tests/support/register.mjs --test tests/*.test.mjs
 
 schemas:
 	glib-compile-schemas "$(SRC)/schemas"

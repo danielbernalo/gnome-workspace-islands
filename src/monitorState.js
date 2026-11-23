@@ -1,65 +1,32 @@
-/**
- * Per-monitor virtual workspace state.
- *
- * Mutter has no notion of a workspace belonging to a monitor — a workspace
- * belongs to the display, and only one is active at a time. With
- * `workspaces-only-on-primary = true`, windows on secondary monitors are
- * sticky: they exist on every workspace and survive native workspace switches.
- *
- * That is what this module exploits. Those windows are always present, so the
- * only question left is which ones are *shown*. A "virtual workspace" is just a
- * set of windows we agree to show together.
- *
- * Monitors are keyed by `connector` (e.g. "HDMI-2") rather than by index,
- * because indices are reshuffled on hotplug while connectors are stable. The
- * name comes from the backend, not from the shell's `Monitor` — see
- * {@link connectorOf}, which is where that distinction was once lost.
- */
+// With workspaces-only-on-primary, secondary windows are sticky; a virtual workspace is a shown set.
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import { hide, show, isHiddenByUs } from './visibility.js';
 import { appKeyOf } from './persistence.js';
 import { stamp, placementIndex } from './placement.js';
+import { isManageable } from './windowFilter.js';
 
-/**
- * Every monitor keeps at least this many virtual workspaces, dynamic or not.
- *
- * Below 2, `overview.js` and `slide.js` fall back to treating the monitor as
- * having no virtual workspaces at all (plain overview, no swipe) — a floor of
- * 2 keeps that branch permanently unreachable instead of needing the monitor's
- * overview to swap view types live as it shrinks and grows.
- */
+// Below 2, overview.js and slide.js treat the monitor as having no virtual workspaces.
 const MIN_SIZE = 2;
 
-/**
- * Ceiling on the size a *restore* is allowed to ask for.
- *
- * Organic growth needs no limit and does not have one: `_growIfNeeded()` adds
- * a single workspace at a time, driven by a human opening a window. Restoring
- * is the opposite kind of event — it sizes a monitor straight from a JSON blob
- * in gsettings whose shape is validated no further than "is this an object",
- * so a corrupted or hand-edited value naming an enormous index would become an
- * enormous allocation inside `enable()`, taking the shell with it.
- *
- * Far above any arrangement a person would build, far below anything that
- * costs a frame to allocate. The point is that the number is bounded, not what
- * the bound is.
- */
+// Bounds sizes read from gsettings so a corrupt saved index cannot allocate inside enable().
 const MAX_RESTORE_SIZE = 36;
 
 export class MonitorState {
-    /**
-     * @param {string} connector
-     * @param {boolean} [dynamic] grow/shrink with occupancy instead of
-     *   staying at whatever count `Registry` applies externally
-     */
     constructor(connector, dynamic = false) {
         this.connector = connector;
         this.activeIndex = 0;
         this._dynamic = dynamic;
         this._groups = Array.from({ length: MIN_SIZE }, () => new Set());
         this._appRules = new Map();
+
+        // Restored rules with no window yet; their empty workspace may be reclaimed.
+        this._unconfirmedApps = new Set();
+
+        // Restored rules that lost their workspace, in saved order; each claims a fresh one.
+        this._pendingApps = new Set();
+
         this._sizeListeners = new Set();
     }
 
@@ -67,12 +34,6 @@ export class MonitorState {
         this._dynamic = dynamic;
     }
 
-    /**
-     * Notified whenever `size` actually changes.
-     *
-     * @param {() => void} callback
-     * @returns {() => void} unsubscribe
-     */
     onSizeChanged(callback) {
         this._sizeListeners.add(callback);
         return () => this._sizeListeners.delete(callback);
@@ -83,32 +44,19 @@ export class MonitorState {
             listener();
     }
 
-    /** Plain object for serialisation: WM_CLASS -> virtual workspace index. */
+    // Pending rules go past the end so a restore grows empty workspaces and re-pends them.
     get appRules() {
-        return Object.fromEntries(this._appRules);
+        const rules = Object.fromEntries(this._appRules);
+
+        let next = this.size;
+        for (const key of this._pendingApps)
+            rules[key] = next++;
+
+        return rules;
     }
 
-    /**
-     * Restore a previously saved arrangement. Indices are clamped, not
-     * trusted — `apps` and `activeIndex` come straight out of a JSON blob in
-     * gsettings, and nothing about their shape is validated beyond "is this an
-     * object".
-     *
-     * Which size they are clamped into depends on the mode, and the two arrive
-     * here from opposite directions. A fixed-mode monitor was sized by
-     * `Registry` before this ran and must stay at exactly that count, so this
-     * only ever clamps. A dynamic one is born at {@link MIN_SIZE} and has
-     * nobody to size it, so it grows to fit what it is about to restore —
-     * within {@link MAX_RESTORE_SIZE}, which is what keeps a hostile number in
-     * that blob from becoming a hostile allocation.
-     */
     restore({ activeIndex = 0, apps = {} } = {}) {
-        // Both come out of a JSON blob in gsettings, which anything can write.
-        // A destructuring default only replaces `undefined`, so a `null` would
-        // reach Object.entries() and throw, and clamp() passes NaN and
-        // fractions straight through to be used as an array index. Either one
-        // throws inside enable(), on every login and every unlock, because
-        // the bad entry is never overwritten by a successful save.
+        // Saved JSON is untrusted: null or non-integers would throw inside enable() on every login.
         if (!Number.isInteger(activeIndex))
             activeIndex = 0;
         if (!apps || typeof apps !== 'object')
@@ -124,30 +72,13 @@ export class MonitorState {
                 .filter(([, index]) => Number.isInteger(index))
                 .map(([key, index]) => [key, clamp(index, 0, this.size - 1)])
         );
+        this._unconfirmedApps = new Set(this._appRules.keys());
+        this._pendingApps = new Set();
     }
 
-    /**
-     * Grow a dynamic monitor to fit the arrangement it is about to restore.
-     *
-     * `activeIndex` counts here, unlike everywhere else that treats it as a
-     * mere hint about where somebody was looking. In dynamic mode the
-     * workspace you are on is routinely empty — the trailing spare is empty by
-     * definition, and sitting on it is how you get a fresh one — so declining
-     * to grow for it is declining to restore it at all. Left out, every
-     * teardown and rebuild of the extension drops you from wherever you were
-     * onto workspace 2, and a lock screen is a teardown.
-     *
-     * Anything the growth cannot justify is collapsed straight back out by
-     * `reconcileSize()` once `enable()` has adopted the real windows, so this
-     * being generous costs a moment of oversized bookkeeping and nothing else.
-     *
-     * @param {number} activeIndex
-     * @param {Object<string, number>} apps
-     */
+    // activeIndex counts here: in dynamic mode the user often sits on the empty spare.
     _growForRestore(activeIndex, apps) {
-        // reduce(), not Math.max(...spread): applying an array of unbounded
-        // length as arguments is its own way to take the shell down, and the
-        // length of this one is decided by whatever is in gsettings.
+        // reduce(), not Math.max(...spread): the array length comes from gsettings.
         const needed = [activeIndex, ...Object.values(apps)]
             .filter(Number.isInteger)
             .reduce((size, index) => Math.max(size, index + 1), MIN_SIZE);
@@ -155,46 +86,65 @@ export class MonitorState {
         this.resize(Math.min(needed, MAX_RESTORE_SIZE));
     }
 
-    /** Remember where this window's application belongs. */
     rememberApp(window, index) {
         const key = appKeyOf(window);
-        if (key)
+        if (!key)
+            return;
+
+        this._appRules.set(key, index);
+        this._pendingApps.delete(key);
+        this._unconfirmedApps.delete(key);
+    }
+
+    // A pending rule adopts this index so the app's next window joins this one.
+    _confirmApp(window, index) {
+        const key = appKeyOf(window);
+        if (!key)
+            return;
+
+        this._unconfirmedApps.delete(key);
+        if (this._pendingApps.delete(key))
             this._appRules.set(key, index);
     }
 
-    /** Saved workspace for this window's application, or -1 if unknown. */
+    // A pending rule resolves to the last workspace, the dynamic spare that is guaranteed fresh.
     indexForApp(window) {
         const key = appKeyOf(window);
-        if (!key || !this._appRules.has(key))
+        if (!key)
+            return -1;
+
+        if (this._pendingApps.has(key))
+            return this.size - 1;
+
+        if (!this._appRules.has(key))
             return -1;
 
         return clamp(this._appRules.get(key), 0, this.size - 1);
     }
 
-    /** Where this exact window was on this monitor, or -1 if we have no note. */
     indexForPlacement(window) {
         const index = placementIndex(window, this.connector);
 
-        // Clamped like indexForApp, and for a sharper reason: a note can
-        // outlive a shrink of `virtual-workspaces`, because resize() can only
-        // reach windows that are in a group at the time.
+        // A note can outlive a shrink, since resize() only reaches windows that are in a group.
         return index < 0 ? -1 : clamp(index, 0, this.size - 1);
     }
 
-    /**
-     * The one way into a group: membership and note are written together.
-     *
-     * Private so that "a window in a group carries a current note" is an
-     * invariant rather than a habit. detach() depends on it — see there.
-     */
+    // Dynamic monitors are sized from saved rules, not notes; clamping would merge workspaces for good.
+    _growForPlacement(window) {
+        if (!this._dynamic)
+            return;
+
+        const index = placementIndex(window, this.connector);
+        if (index >= this.size)
+            this.resize(Math.min(index + 1, MAX_RESTORE_SIZE));
+    }
+
+    // The only way into a group: membership and note are written together, which detach() relies on.
     _place(window, index) {
         this._groups[index].add(window);
         stamp(window, this.connector, index);
 
-        // Back in a group, so no longer owed a ride home. Clearing it here
-        // rather than in the reclaim itself means a window is reclaimed at most
-        // once per disconnect however it got back — under its own steam, by
-        // Mutter, or by us.
+        // Cleared here so a window is reclaimed at most once per disconnect, however it got back.
         this._detached?.delete(window);
     }
 
@@ -210,7 +160,6 @@ export class MonitorState {
         return this.windowsOn(this.activeIndex);
     }
 
-    /** Every window this monitor knows about, in any virtual workspace. */
     get allWindows() {
         return this._groups.flatMap(group => [...group]);
     }
@@ -219,50 +168,27 @@ export class MonitorState {
         return this._groups.findIndex(group => group.has(window));
     }
 
-    /**
-     * Assign a window to a virtual workspace.
-     *
-     * Four answers, in descending order of how much they actually know:
-     *
-     *   explicit index   a drop or a move. The user just said where.
-     *   placement note   this exact window was on workspace N of this exact
-     *                    monitor, and something churned in between — a lock
-     *                    screen, an unplug, a resume. Not a guess: a record.
-     *   app rule         a window we have never seen, of an app we have. A
-     *                    guess, and a good one.
-     *   active index     nothing is known. Put it where the user is looking.
-     *
-     * The note outranks the rule because they answer different questions. The
-     * rule says "windows of this app usually live on 3"; the note says "this
-     * window was on 2, four hundred milliseconds ago". A resume that consulted
-     * the rule first collapses every window of an app into one workspace, which
-     * is the entire bug this ordering exists to prevent.
-     *
-     * A window that lands somewhere other than the active workspace is hidden
-     * immediately — otherwise it appears on screen for a moment and then
-     * vanishes, which reads as a bug.
-     *
-     * @param {object} [options]
-     * @param {boolean} [options.trustPlacement] consult the note. False for a
-     *   window the user just dragged here: a drag is a statement about *now*,
-     *   and honouring an old note would make the window they are holding
-     *   vanish onto some workspace they are not looking at. Every other caller
-     *   is recovering from churn, where the note is the whole point.
-     * @returns {number} the index it was assigned to, or -1 if already tracked
-     */
+    // The placement note outranks the app rule; rule-first collapses an app's windows after a resume.
     track(window, index = -1, { trustPlacement = true } = {}) {
-        if (this.indexOf(window) !== -1)
+        // Refused here, not only by callers: every way into a group, overview drops included, ends here.
+        if (this.indexOf(window) !== -1 || !isManageable(window))
             return -1;
 
         let target = index;
-        if (target < 0 || target >= this.size)
-            target = trustPlacement ? this.indexForPlacement(window) : -1;
+        if (target < 0 || target >= this.size) {
+            target = -1;
+            if (trustPlacement) {
+                this._growForPlacement(window);
+                target = this.indexForPlacement(window);
+            }
+        }
         if (target < 0)
             target = this.indexForApp(window);
         if (target < 0)
             target = this.activeIndex;
 
         this._place(window, target);
+        this._confirmApp(window, target);
         this._growIfNeeded(target);
 
         if (target !== this.activeIndex)
@@ -271,22 +197,18 @@ export class MonitorState {
         return target;
     }
 
-    untrack(window) {
+    // Batch callers skip reconcile: collapsing mid-batch strands notes of windows already released.
+    untrack(window, { reconcile = true } = {}) {
         const from = this.indexOf(window);
 
         for (const group of this._groups)
             group.delete(window);
 
-        if (from !== -1)
+        if (from !== -1 && reconcile)
             this._reconcileEmpties();
     }
 
-    /**
-     * Show the target group, hide the rest.
-     *
-     * Order matters: reveal first, then hide. Hiding first leaves a visible
-     * flash of empty desktop between the two states.
-     */
+    // Show before hiding: the reverse flashes an empty desktop.
     switchTo(index, { animate = true } = {}) {
         if (index < 0 || index >= this.size || index === this.activeIndex)
             return false;
@@ -299,10 +221,6 @@ export class MonitorState {
 
         this.activeIndex = index;
 
-        // The workspace just left may have been empty and is no longer
-        // protected by being active — exactly what makes it removable now,
-        // the same way native GNOME drops an empty workspace once you switch
-        // away from it.
         this._reconcileEmpties();
 
         return true;
@@ -320,8 +238,6 @@ export class MonitorState {
         this._place(window, index);
         this._growIfNeeded(index);
 
-        // Moving a window by hand is the strongest signal we get about where
-        // its application belongs, so it updates the rule.
         this.rememberApp(window, index);
 
         if (index === this.activeIndex)
@@ -329,21 +245,12 @@ export class MonitorState {
         else
             hide(window);
 
-        // The group it left behind, not the one it joined — that one just grew.
         this._reconcileEmpties();
 
         return true;
     }
 
-    /**
-     * Apply the current active index to every window this monitor holds.
-     *
-     * Instant, never animated. This runs at enable() and after a hotplug —
-     * always "bring the screen in line with a model that changed underneath
-     * it", never a transition the user asked to watch. Animated, an unlock
-     * would open with every window on every inactive workspace minimizing
-     * itself in sequence.
-     */
+    // Never animated: it realigns the screen with a model that changed underneath, e.g. at unlock.
     reapply() {
         for (let i = 0; i < this.size; i++) {
             for (const window of this.windowsOn(i)) {
@@ -355,7 +262,7 @@ export class MonitorState {
         }
     }
 
-    /** Put every window back on screen. Must be total — see visibility.js. */
+    // Must be total: a window left parked after unload is invisible and unreachable.
     restoreAll() {
         for (const window of this.allWindows) {
             if (isHiddenByUs(window))
@@ -363,39 +270,18 @@ export class MonitorState {
         }
     }
 
-    /**
-     * Release the windows but keep the arrangement.
-     *
-     * Used when the monitor is unplugged: its windows have already been moved
-     * to another monitor by Mutter, and any we had hidden are still minimized
-     * — invisible on a monitor that has no virtual workspaces to explain why.
-     * They get shown and dropped.
-     *
-     * The groups really are cleared, and that is deliberate. Keeping them would
-     * mean two monitors owning the same window: the display that took the
-     * windows tracks them, and this one would still hold them and minimize them
-     * on its next switch — a window on the other screen vanishing for no
-     * visible reason. The note replaces the group; it does not supplement it.
-     *
-     * Re-stamping first is what makes the unplug survivable. Every window in a
-     * group is already stamped — _place() is the only way in — so the loop is
-     * redundant today, and it is written out anyway because this is the one
-     * place where the note stops being a second copy of the group and becomes
-     * the only surviving record of it. A future edit that finds another way
-     * into a group should fail here, not silently on the next dock.
-     */
+    // Groups are cleared so two monitors never own one window; the notes become the only record.
     detach() {
+        // Redundant while _place() is the only way in; kept because notes are now the sole record.
         for (let index = 0; index < this.size; index++) {
             for (const window of this.windowsOn(index))
                 stamp(window, this.connector, index);
         }
 
-        // Which windows this monitor lost, so the ones Mutter does not bring
-        // back can be fetched when it returns. A WeakSet because it is only
-        // ever asked "was this one yours" and never walked — a window closed
-        // while the display is unplugged must not be kept alive by our
-        // bookkeeping, and would be a dead reference by the time it came back.
-        this._detached = new WeakSet(this.allWindows);
+        // Added to, never replaced: pruneDetached() re-detaches absent monitors with empty groups.
+        this._detached ??= new WeakSet();
+        for (const window of this.allWindows)
+            this._detached.add(window);
 
         this.restoreAll();
 
@@ -403,18 +289,11 @@ export class MonitorState {
             group.clear();
     }
 
-    /**
-     * True if this monitor lost this window when it was unplugged.
-     *
-     * The difference between "belongs here" and "is owed a ride home". A window
-     * the user moved to the laptop screen last week still carries a note naming
-     * this monitor; it was not detached, and dragging it back is their call.
-     */
+    // Detached means owed a ride home, unlike a window the user moved away that still has a note.
     wasDetached(window) {
         return this._detached?.has(window) ?? false;
     }
 
-    /** Resize the workspace count, folding anything beyond the new end. */
     resize(size) {
         if (size === this.size || size < MIN_SIZE)
             return;
@@ -423,8 +302,6 @@ export class MonitorState {
             while (this._groups.length < size)
                 this._groups.push(new Set());
         } else {
-            // Shrinking: everything past the new end collapses into the last
-            // group rather than vanishing along with its windows.
             const tail = this._groups.splice(size);
             for (const group of tail) {
                 for (const window of group)
@@ -434,7 +311,14 @@ export class MonitorState {
             if (this.activeIndex >= size)
                 this.activeIndex = size - 1;
 
-            // Rules pointing past the new end would silently send windows nowhere.
+            // A fold can land parked windows on the visible workspace; show only what we parked.
+            if (this.activeIndex === size - 1) {
+                for (const window of this.windowsOn(size - 1)) {
+                    if (isHiddenByUs(window))
+                        show(window, { animate: false });
+                }
+            }
+
             for (const [key, index] of this._appRules) {
                 if (index >= size)
                     this._appRules.set(key, size - 1);
@@ -444,27 +328,12 @@ export class MonitorState {
         this._notifySizeChanged();
     }
 
-    /**
-     * Grow by one if the group a window just landed in was the last one.
-     *
-     * Only in dynamic mode, and with no ceiling — the same shape as GNOME's
-     * own dynamic workspaces always keeping one empty one in reserve.
-     */
     _growIfNeeded(index) {
         if (this._dynamic && index === this.size - 1)
             this.resize(this.size + 1);
     }
 
-    /**
-     * Remove every empty group except the active one and the last one,
-     * shifting later indices down to fill the gap.
-     *
-     * Only in dynamic mode. Matches native GNOME dynamic workspaces: an empty
-     * workspace disappears unless it's the one you're looking at (removing
-     * that out from under you would be jarring) or the trailing spare (always
-     * kept in reserve). A no-op if nothing qualifies, so it is cheap to call
-     * after anything that might have emptied a group.
-     */
+    // Like native dynamic workspaces: empties go, except the active one and the trailing spare.
     _reconcileEmpties() {
         if (!this._dynamic)
             return;
@@ -480,16 +349,11 @@ export class MonitorState {
         if (removable.length === 0)
             return;
 
-        // Never below the floor, even if that means leaving some empty
-        // slots in place — see MIN_SIZE.
         const toRemove = new Set(removable.slice(0, Math.max(0, this.size - MIN_SIZE)));
         if (toRemove.size === 0)
             return;
 
-        // Re-stamp windows whose index changed as each slot is kept, so a
-        // future reclaim/restore agrees with where they actually ended up —
-        // _place() is the only other writer of this note, and it isn't
-        // involved in a pure re-index.
+        // Re-stamp moved windows so notes match the new indices; _place() is not involved in a re-index.
         const oldToNew = new Map();
         const newGroups = [];
         for (let i = 0; i < this.size; i++) {
@@ -509,69 +373,70 @@ export class MonitorState {
         this._groups = newGroups;
         this.activeIndex = oldToNew.get(this.activeIndex);
 
-        // A rule pointing at a slot that just got removed for being empty
-        // loses its home — dropped, the same way a stale rule a shrink can't
-        // reach is already dropped today, rather than remapped to somewhere
-        // it never asked for.
+        // Unconfirmed restored rules become pending instead of dropped, as does one on the empty spare.
         const newAppRules = new Map();
+        const homeless = [];
         for (const [key, oldIndex] of this._appRules) {
             if (oldToNew.has(oldIndex))
                 newAppRules.set(key, oldToNew.get(oldIndex));
+            else if (this._unconfirmedApps.has(key))
+                homeless.push([key, oldIndex]);
         }
+
+        const newLast = newGroups.length - 1;
+        if (newGroups[newLast].size === 0) {
+            for (const [key, index] of newAppRules) {
+                if (index === newLast && this._unconfirmedApps.has(key)) {
+                    newAppRules.delete(key);
+                    homeless.push([key, lastIndex]);
+                }
+            }
+        }
+
+        homeless.sort(([, a], [, b]) => a - b);
+        for (const [key] of homeless)
+            this._pendingApps.add(key);
+
         this._appRules = newAppRules;
 
         this._notifySizeChanged();
     }
 
-    /**
-     * Re-establish the dynamic-mode empty-workspace invariant after something
-     * that changes membership without going through
-     * track()/untrack()/moveWindowTo()/switchTo() — a restore that grew to
-     * fit saved data, or a hotplug that reclaimed some windows but not
-     * others. Safe to call unconditionally; a no-op outside dynamic mode or
-     * when the invariant already holds.
-     */
     reconcileSize() {
         this._reconcileEmpties();
+
+        // Saving on the spare restores two trailing empties; drop one or the count grows every unlock.
+        const last = this.size - 1;
+        if (this._dynamic && this.activeIndex === last - 1 &&
+            this._groups[last].size === 0 && this._groups[last - 1].size === 0)
+            this.resize(last);
+
+        // Ensure a spare when the last workspace is occupied, e.g. after switching from fixed mode.
+        if (this._dynamic && this._groups[this.size - 1].size > 0)
+            this.resize(this.size + 1);
     }
 }
 
 export class Registry {
-    /**
-     * @param {number} fixedCount the exact count applied when not dynamic;
-     *   has no effect on a monitor currently in dynamic mode, which grows
-     *   without a ceiling
-     * @param {boolean} dynamic
-     * @param {object} [saved]
-     */
     constructor(fixedCount, dynamic, saved = { monitors: {} }) {
         this._fixedCount = fixedCount;
         this._dynamic = dynamic;
         this._states = new Map();
 
-        // Kept around rather than applied once: a monitor plugged in later in
-        // the session must get its saved arrangement too, not a default one.
+        this._heldFocus = null;
+
+        // Kept, not applied once: a monitor plugged in later must get its saved arrangement too.
         this._saved = saved;
     }
 
     _createState(connector) {
         const state = new MonitorState(connector, this._dynamic);
 
-        // Fixed mode: size to the configured count *before* restoring, not
-        // after — restore() clamps a fixed-mode monitor rather than growing
-        // it, so a saved rule within that count has to find the real size
-        // already in place or it clamps down to the floor and stays there.
-        //
-        // Dynamic mode is deliberately not sized here. It has no configured
-        // count to be sized *to*, and the number it actually needs is a
-        // property of the saved arrangement, which restore() is the one
-        // holding. From there on size is earned by occupancy.
+        // Size fixed monitors before restore(), which clamps rather than grows them.
         if (!this._dynamic)
             state.resize(this._fixedCount);
 
-        // A saved arrangement is a convenience; a monitor is not. If restoring
-        // ever throws, start this monitor fresh rather than let enable() fail
-        // on every login over a blob a successful save would have replaced.
+        // A bad saved blob must not fail enable() on every login; start this monitor fresh.
         const saved = this._saved?.monitors?.[connector];
         if (saved) {
             try {
@@ -593,13 +458,6 @@ export class Registry {
         return [...this._states.values()];
     }
 
-    /**
-     * Rebuild the connector set from the current monitor layout.
-     *
-     * State for connectors that come back after a hotplug is preserved — the
-     * windows are gone by then, but the active index and the user's mental
-     * model of "workspace 3 on the LG" are not.
-     */
     syncMonitors() {
         const primaryIndex = Main.layoutManager.primaryIndex;
         const live = new Set();
@@ -618,13 +476,6 @@ export class Registry {
         return live;
     }
 
-    /**
-     * Change the static-mode count.
-     *
-     * Applied immediately only to monitors currently in fixed mode. A
-     * dynamic monitor has no ceiling to change — the new value is just
-     * remembered for whenever fixed mode resumes on it.
-     */
     setFixedCount(count) {
         this._fixedCount = count;
         if (this._dynamic)
@@ -634,14 +485,6 @@ export class Registry {
             state.resize(count);
     }
 
-    /**
-     * Switch every monitor between fixed and dynamic.
-     *
-     * Fixed -> dynamic: trims any excess trailing empties, but does not
-     * force-grow anything — growth resumes organically from here.
-     * Dynamic -> fixed: forces every monitor to the exact configured count,
-     * identical to a plain count change today.
-     */
     setDynamic(dynamic) {
         this._dynamic = dynamic;
         for (const state of this._states.values()) {
@@ -657,19 +500,35 @@ export class Registry {
         return this._states.get(connector) ?? null;
     }
 
-    /**
-     * Drop a window from every state. For a window that is going away.
-     *
-     * Bookkeeping only — no un-hiding, because there is nothing left to show.
-     * Total on purpose: a dying window's monitor is not worth asking about, and
-     * a group left holding one would minimize() it on the next reapply().
-     */
+    // Total on purpose: a group left holding a dead window would minimize() it on the next reapply().
     untrackEverywhere(window) {
         for (const state of this._states.values())
             state.untrack(window);
     }
 
-    /** Create state for a connector that is not currently attached. */
+    // Window-left-monitor signals are ignored during a layout change, so strays are dropped here.
+    releaseStrays() {
+        for (const state of this._states.values()) {
+            for (const window of state.allWindows) {
+                if (this.forWindow(window) !== state)
+                    state.untrack(window, { reconcile: false });
+            }
+        }
+    }
+
+    // Parked windows that no group holds would otherwise stay minimized forever.
+    restoreOrphans(windows) {
+        for (const window of windows) {
+            if (isHiddenByUs(window) && !this.states.some(state => state.indexOf(window) !== -1))
+                show(window, { animate: false });
+        }
+    }
+
+    // Keeps shortcuts on this monitor after it switched to an empty workspace and focus was unset.
+    holdFocus(connector) {
+        this._heldFocus = connector;
+    }
+
     ensureConnector(connector) {
         if (!this._states.has(connector))
             this._createState(connector);
@@ -677,7 +536,6 @@ export class Registry {
         return this._states.get(connector);
     }
 
-    /** State for a monitor index, or null if it is the primary or unknown. */
     forMonitorIndex(index) {
         if (index < 0 || index === Main.layoutManager.primaryIndex)
             return null;
@@ -688,7 +546,6 @@ export class Registry {
         return this.forConnector(connectorOf(index));
     }
 
-    /** State for the monitor a window sits on, or null if it is on primary. */
     forWindow(window) {
         const index = window.get_monitor();
         if (index < 0 || index === Main.layoutManager.primaryIndex)
@@ -700,16 +557,11 @@ export class Registry {
         return this.forConnector(connectorOf(index));
     }
 
-    /**
-     * State for the monitor the user is working on, or null if that's primary.
-     *
-     * The focused window decides, not the pointer. `get_current_monitor()`
-     * follows the mouse, which means a shortcut pressed while the pointer
-     * happens to rest over the primary monitor silently does nothing — the
-     * hand is on the keyboard, not the mouse. Pointer position is only a
-     * fallback for when nothing is focused at all.
-     */
+    // Focus decides, not the pointer: shortcuts come from the keyboard; the pointer is a fallback.
     forFocusedMonitor() {
+        if (this._heldFocus && !global.display.focus_window)
+            return this.forConnector(this._heldFocus);
+
         const index = focusedMonitorIndex();
         if (index < 0 || index === Main.layoutManager.primaryIndex)
             return null;
@@ -720,20 +572,11 @@ export class Registry {
         return this.forConnector(connectorOf(index));
     }
 
-    /**
-     * State for the monitor under the pointer, or null if that's primary.
-     *
-     * The deliberate opposite of {@link forFocusedMonitor}, and for the reason
-     * stated there in reverse: a shortcut is pressed with a hand on the
-     * keyboard, so the focused window decides. A wheel is turned with a hand on
-     * the mouse, so the pointer decides. Asking the focused window where a
-     * wheel notch belongs would scroll a screen the user is not pointing at.
-     */
+    // The pointer decides here: wheel input comes from the mouse, unlike shortcuts.
     forPointerMonitor() {
         return this.forMonitorIndex(global.display.get_current_monitor());
     }
 
-    /** Human-readable resolution trace, for diagnosing "nothing happened". */
     describeFocusTarget() {
         const focused = global.display.focus_window;
         const index = focusedMonitorIndex();
@@ -744,22 +587,23 @@ export class Registry {
             (index === primary ? ' (PRIMARY — shortcut is a no-op here)' : '');
     }
 
-    /**
-     * Release monitors that are no longer attached.
-     *
-     * Their state object is kept, not deleted: it holds the arrangement to
-     * restore if the display comes back.
-     */
+    // State is kept, not deleted: it holds the arrangement to restore when the display returns.
     pruneDetached(live) {
         for (const [connector, state] of this._states) {
             if (!live.has(connector))
                 state.detach();
         }
+
+        if (this._heldFocus && !live.has(this._heldFocus))
+            this._heldFocus = null;
     }
 
-    restoreAll() {
+    // Groups alone are not enough: a tagged window may sit in no group (see restoreOrphans).
+    restoreAll(windows = []) {
         for (const state of this._states.values())
             state.restoreAll();
+
+        this.restoreOrphans(windows);
     }
 
     clear() {
@@ -767,39 +611,16 @@ export class Registry {
     }
 }
 
-/**
- * Index -> connector for the current layout, or null when it needs rereading.
- *
- * Cached because this is not a cold path: the indicator resolves the focused
- * monitor on every frame of a swipe preview, and asking the backend to name
- * every output sixty times a second to answer a question whose answer cannot
- * change mid-gesture is work for nothing. {@link invalidateConnectors} is the
- * other half — the layout is the only thing that can make this stale.
- */
+// Cached: the indicator resolves the focused monitor on every frame of a swipe preview.
 let connectors = null;
 
-/**
- * The connector driving a monitor index — "HDMI-2", not "monitor-1".
- *
- * This module is keyed by connector precisely because indices are reshuffled on
- * hotplug. Until now that was an intention rather than a fact: the shell's
- * `Monitor` is `(index, geometry, scale)` and carries no name, so
- * `monitor.connector` was always undefined and every key fell through to the
- * positional fallback. The model was keyed by index after all — unplug a
- * display, plug it back in second instead of first, and "the LG's workspace 3"
- * was restored onto whatever now sat at index 1.
- *
- * The name has to come from the backend. `get_monitor_for_connector` answers
- * with the logical monitor index a connector currently drives, and that is the
- * same index space `Main.layoutManager.monitors` uses, so one pass over the
- * attached monitors gives exactly the mapping this module always assumed it had.
- */
+// The shell's Monitor has no name; connectors come from the backend so hotplug keeps keys stable.
 export function connectorOf(index) {
     connectors ??= readConnectors();
     return connectors[index] ?? `monitor-${index}`;
 }
 
-/** Drop the cache. Call whenever the monitor layout is about to change. */
+// Call whenever the monitor layout is about to change.
 export function invalidateConnectors() {
     connectors = null;
 }
@@ -823,21 +644,12 @@ function readConnectors() {
                 map[index] = connector;
         }
     } catch (e) {
-        // A backend that cannot name its monitors is not a reason to stop
-        // working. Positional keys are what this did before, and they are right
-        // for as long as nothing is unplugged.
         console.warn(`workspace-islands: could not read monitor connectors: ${e}`);
     }
 
     return map;
 }
 
-/**
- * Current index for a connector, or -1 if that display is not attached.
- *
- * Lives here rather than in the two modules that had identical private copies:
- * both were scanning a monitor list that does not know its own names.
- */
 export function monitorIndexOf(connector) {
     return Main.layoutManager.monitors.findIndex(
         (_monitor, index) => connectorOf(index) === connector);
