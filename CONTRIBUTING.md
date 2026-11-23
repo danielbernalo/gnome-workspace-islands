@@ -109,7 +109,8 @@ CI builds the bundle and publishes it. It refuses to publish when the tag and
 `version-name` disagree, so a release can never claim a version nothing was
 tagged with.
 
-`make pack` is deterministic — fixed timestamps, sorted entries — so anyone can
+`make pack` is deterministic — fixed timestamps, sorted entries, and files stored
+uncompressed, since deflate output differs between zlib builds — so anyone can
 rebuild a tag and compare bytes with what was published.
 
 ## Touching GNOME Shell internals

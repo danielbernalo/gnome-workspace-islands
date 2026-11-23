@@ -234,8 +234,8 @@ doctor:
 # machines, which is how this target was broken before. python3 is already a
 # dependency of the targets above.
 #
-# Deterministic on purpose: fixed timestamps and sorted entries, so the same
-# tree always produces the same bytes and a release can be reproduced.
+# Deterministic on purpose: fixed timestamps, sorted entries, and stored rather
+# than deflated, because deflate output differs between zlib builds.
 pack: schemas
 	@python3 -c "$$PACK_SCRIPT"
 
@@ -250,15 +250,15 @@ members = sorted(
     p for p in src.rglob('*')
     if p.is_file() and p.name != 'gschemas.compiled')
 
-with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as z:
     for path in members:
         info = zipfile.ZipInfo(str(path.relative_to(src)), (1980, 1, 1, 0, 0, 0))
-        info.compress_type = zipfile.ZIP_DEFLATED
+        info.compress_type = zipfile.ZIP_STORED
         info.external_attr = 0o644 << 16
         z.writestr(info, path.read_bytes())
 
     licence = zipfile.ZipInfo('LICENSE', (1980, 1, 1, 0, 0, 0))
-    licence.compress_type = zipfile.ZIP_DEFLATED
+    licence.compress_type = zipfile.ZIP_STORED
     licence.external_attr = 0o644 << 16
     z.writestr(licence, (root / 'LICENSE').read_bytes())
 
