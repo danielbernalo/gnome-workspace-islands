@@ -125,4 +125,6 @@ jobs:
       # It once shipped 2 of 12, because `gnome-extensions pack` drops whatever
       # is not named with --extra-source and warns about none of it.
       - name: Bundle builds and is complete
-        run: make pack
+        run: |
+          make pack
+          sha256sum *.shell-extension.zip
